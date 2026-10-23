@@ -1,0 +1,89 @@
+version: "3.9"
+
+
+# Red aislada: todos los módulos se comunican por nombre de servicio
+networks:
+  medly-net:
+    driver: bridge
+
+
+# Servicios
+
+services:
+
+  # Base de Datos Relacional - PostgreSQL 16
+  db-relacional:
+    image: postgres:16-alpine
+    container_name: medly-db-relacional
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: citas_db
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - medly-net
+    ports:
+      - "5432:5432"           # Expuesto solo para inspección local (DBeaver, psql, etc.)
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d citas_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # Módulo B - Servicio de Dominio (FastAPI / Python) | Puerto 5000
+  # Solo accesible dentro de medly-net; modulo-a lo llama por hostname.
+  modulo-b:
+    build:
+      context: ./modulo-b
+      dockerfile: Dockerfile
+    container_name: medly-modulo-b
+    restart: unless-stopped
+    environment:
+      DB_HOST: db-relacional
+      DB_PORT: 5432
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_NAME: citas_db
+    ports:
+      - "5000:5000"
+    networks:
+      - medly-net
+    depends_on:
+      db-relacional:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:5000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # Módulo A - API Gateway (Node.js / Express) | Puerto 8080
+  # Único punto de entrada público. Pertenece a medly-net para
+  # resolver "modulo-b" y "modulo-c" por nombre de servicio DNS.
+  modulo-a:
+    build:
+      context: ./modulo-a
+      dockerfile: Dockerfile
+    container_name: medly-modulo-a
+    restart: unless-stopped
+    environment:
+      PORT: 8080
+      MODULO_B_URL: http://modulo-b:5000
+      MODULO_C_URL: http://modulo-c:6000
+    ports:
+      - "8080:8080"           # Único puerto expuesto al host / frontend
+    networks:
+      - medly-net
+    depends_on:
+      modulo-b:
+        condition: service_healthy
+
+
+# Volúmenes persistentes
+volumes:
+  pgdata:
+    driver: local
