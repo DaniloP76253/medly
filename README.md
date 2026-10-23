@@ -1,243 +1,292 @@
-# Medly — Plataforma de Gestión de Consultas Médicas
+# Medly - Plataforma de gestión de consultas médicas
 
-Arquitectura de microservicios heterogénea compuesta por 3 módulos principales y 2 motores de bases de datos:
+Medly es una arquitectura de microservicios compuesta por un gateway, un servicio de dominio y un servicio de auditoría. El proyecto utiliza PostgreSQL para las citas y MongoDB Atlas Local para la trazabilidad.
 
-| Módulo | Rol | Tecnología | Puerto |
-|--------|-----|-----------|--------|
-| **A** — API Gateway | Ingesta y orquestación de llamadas | Node.js + Express | `8080` |
-| **B** — Servicio de Dominio | Lógica de negocio y transacciones de citas | Python + FastAPI | `5000` |
-| **C** — Trazabilidad y Auditoría | Registro inmutable de eventos y trazabilidad | Java 17 + Spring Boot 3 | `6000` |
-| **DB Relacional** | Persistencia ACID de citas médicas | PostgreSQL 16 | `5432` |
-| **DB NoSQL (Atlas)** | Almacén inmutable de auditoría | MongoDB Atlas Local (Docker) | `27017` |
+## Arquitectura y puertos
 
----
+|   |   |   |   |
+|---|---|---|---|
+|**Componente**|**Tecnología**|**Puerto dentro de Docker**|**Puerto en el host**|
+|Módulo A - API Gateway|Node.js + Express|`8080`|`8081`|
+|Módulo B - Servicio de dominio|Python + FastAPI|`5000`|`5000`|
+|Módulo C - Auditoría|Java 17 + Spring Boot|`6001`|`6000`|
+|PostgreSQL|PostgreSQL 16|`5432`|`5433`|
+|MongoDB|MongoDB Atlas Local|`27017`|`27017`|
 
-## Flujo de Interacción entre Módulos
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant Cliente
-    participant A as Módulo A (Gateway :8080)
-    participant B as Módulo B (Dominio :5000)
-    participant PG as PostgreSQL (citas_db)
-    participant C as Módulo C (Auditoría :6000)
-    participant Atlas as MongoDB Atlas (medly_audit)
-
-    Cliente->>A: Petición HTTP (/api/citas)
-    A->>B: Despacha operación de negocio
-    B->>PG: Transacción ACID (Crea/Actualiza/Elimina)
-    PG-->>B: Consistencia garantizada
-    B-->>A: Respuesta con estado de cita
-    A->>C: POST /api/auditoria/eventos (Notificación)
-    C->>C: Genera hash SHA-256 de integridad
-    C->>Atlas: Persiste evento inmutable
-    Atlas-->>C: Confirmación
-    C-->>A: Evento registrado
-    A-->>Cliente: Respuesta unificada
-```
-
----
+El gateway es el punto de entrada recomendado para las operaciones de citas: `http://localhost:8081`. Los puertos internos son los que utilizan los contenedores para comunicarse entre sí.
 
 ## Requisitos
 
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/) (o Docker Engine + Compose) en ejecución.
+Para ejecutar el sistema completo:
 
----
+- Docker Engine o Docker Desktop en ejecución.
+    
+- Docker Compose v2 (`docker compose`).
+    
+- Bash y `curl` para ejecutar los scripts de prueba.
+    
 
-## Levantar el Proyecto
+Para ejecutar pruebas del módulo C fuera de Docker:
 
-### Todo el ecosistema (Módulos A, B, C, PostgreSQL y MongoDB Atlas):
+- Java 17.
+    
+- Maven 3.9 o posterior.
+    
+- Una instancia accesible de MongoDB, o las variables de conexión configuradas en `modulo-c/src/main/resources/application.yml`.
+    
 
-```bash
-docker compose up --build
+## Ejecución recomendada con Docker Compose
+
+Desde la raíz del repositorio:
+
 ```
-
-Para correr en segundo plano (detached mode):
-
-```bash
+docker compose config -q
 docker compose up --build -d
 ```
 
-Para detener todos los servicios:
+Compose inicia los servicios en el orden necesario: primero las bases de datos, después el módulo B y el módulo C, y finalmente el módulo A. Las comprobaciones de salud evitan que un servicio dependiente se inicie antes de tiempo.
 
-```bash
+Para ver el estado de los servicios:
+
+```
+docker compose ps
+```
+
+Para seguir los logs:
+
+```
+docker compose logs -f modulo-a modulo-b modulo-c
+```
+
+Para detener los contenedores sin eliminar los datos:
+
+```
 docker compose down
 ```
 
-> **Persistencia**: Los datos se guardan en los volúmenes `pgdata` (PostgreSQL) y `atlas_local_data` (MongoDB). Para limpiar los datos y reiniciar desde cero:
-> ```bash
-> docker compose down -v
-> ```
+Para detenerlos y borrar también los volúmenes persistentes (reinicio completo de PostgreSQL y MongoDB):
 
-### Prueba automática de contenedores
+```
+docker compose down -v
+```
 
-Para levantar el stack, esperar a que todos los servicios estén saludables y probar el flujo crear → actualizar → eliminar:
+> La primera ejecución puede tardar porque construye las imágenes y descarga PostgreSQL, MongoDB, Node.js, Python y Java.
 
-```bash
+## Comprobación de salud
+
+Ejecuta estas comprobaciones después de que `docker compose ps` muestre los servicios como `healthy`:
+
+```
+curl http://localhost:5000/health
+curl http://localhost:6000/api/auditoria/health
+curl -i http://localhost:8081/api/citas
+```
+
+Las dos primeras deben responder correctamente. La última debe devolver `404` porque se está consultando una ruta no existente sin usar un método de negocio; esa respuesta confirma que el gateway está disponible.
+
+## Prueba automática del flujo completo
+
+El script de integración construye y levanta todo el stack, espera a que los cinco servicios estén saludables y prueba el flujo:
+
+1. Crear una cita mediante el módulo A.
+    
+2. Cambiar su estado mediante el módulo A.
+    
+3. Eliminarla mediante el módulo A.
+    
+4. Verificar el rechazo de un payload inválido.
+    
+
+Desde la raíz del repositorio:
+
+```
+chmod +x test-containers.sh
 ./test-containers.sh
 ```
 
-El script deja los contenedores ejecutándose para poder inspeccionarlos. Para detenerlos automáticamente al finalizar:
+El script deja los contenedores ejecutándose si termina correctamente. Para detenerlos automáticamente al finalizar:
 
-```bash
+```
 ./test-containers.sh --down
 ```
 
----
+Se puede cambiar la URL del gateway y el tiempo máximo de espera:
 
-## Verificar que los Servicios Están Activos
-
-| Servicio | URL de Verificación | Respuesta esperada |
-|----------|----------------------|--------------------|
-| **Módulo B (FastAPI)** | `GET http://localhost:5000/health` | `{"status": "UP"}` |
-| **Módulo C (Spring Boot)** | `GET http://localhost:6000/api/auditoria/eventos` | `{"status": "SUCCESS", "codigo": 200, ...}` |
-
----
-
-## Endpoints Disponibles
-
-### A. Operaciones de Citas (Expuestas por el Gateway en el puerto 8080)
-
-Cada una de estas operaciones actualiza el Módulo B y **notifica automáticamente al Módulo C** para auditar el cambio.
-
-#### 1. Crear Cita Médica
-```http
-POST http://localhost:8080/api/citas
-Content-Type: application/json
-
-{
-  "paciente_id": "PAC-4412",
-  "medico_id":   "MED-008",
-  "fecha_hora":  "2026-10-25T10:30:00Z",
-  "motivo":      "Control general de salud"
-}
 ```
-*Respuesta Exitosa (HTTP 201 Created)*: Genera `cita_id` en estado `PENDIENTE` y crea el evento de auditoría `CREACION` en MongoDB.
-
-#### 2. Cambiar Estado de una Cita
-```http
-PATCH http://localhost:8080/api/citas/{cita_id}/estado
-Content-Type: application/json
-
-{
-  "nuevo_estado": "CONFIRMADA",
-  "observacion":  "Paciente confirmó por teléfono"
-}
+GATEWAY_URL=http://localhost:8081 WAIT_SECONDS=240 ./test-containers.sh --down
 ```
-Estados válidos: `PENDIENTE` · `CONFIRMADA` · `EN_CURSO` · `COMPLETADA` · `CANCELADA`.  
-*Respuesta Exitosa (HTTP 200 OK)*: Registra el evento `ACTUALIZACION_ESTADO` con el estado previo y nuevo en Módulo C.
 
-#### 3. Eliminar una Cita
-```http
-DELETE http://localhost:8080/api/citas/{cita_id}
+Si una prueba falla, el script muestra el estado de Compose y los últimos logs de todos los servicios.
+
+## Uso de la API
+
+Todas las siguientes operaciones se ejecutan contra el gateway en `http://localhost:8081`.
+
+### Crear una cita
+
 ```
-> Regla de negocio: No se puede eliminar una cita en estado `COMPLETADA` o `EN_CURSO` (retorna HTTP 409).  
-*Respuesta Exitosa (HTTP 200 OK)*: Registra el evento `ELIMINACION` con estado `ELIMINADA` en Módulo C.
+curl -i -X POST http://localhost:8081/api/citas \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "paciente_id": "PAC-4412",
+    "medico_id": "MED-008",
+    "fecha_hora": "2026-10-25T10:30:00Z",
+    "motivo": "Control general de salud"
+  }'
+```
 
----
+La respuesta esperada es `201 Created`. Guarda el valor `data.cita_id` de la respuesta para las siguientes operaciones.
 
-### B. Consultas de Auditoría y Trazabilidad (Módulo C en puerto 6000)
+### Cambiar el estado de una cita
 
-| Método | Endpoint | Descripción |
-|--------|----------|-------------|
-| `GET` | `/api/auditoria/eventos` | Lista todos los eventos de auditoría registrados |
-| `GET` | `/api/auditoria/eventos/cita/{citaId}` | Traza completa e histórica de una cita específica |
-| `GET` | `/api/auditoria/eventos/tipo/{tipoOperacion}` | Filtra eventos por tipo (`CREACION`, `ACTUALIZACION_ESTADO`, `ELIMINACION`) |
-| `GET` | `/api/auditoria/eventos/rango?desde={iso}&hasta={iso}` | Filtra eventos por rango de fechas |
-| `POST`| `/api/auditoria/eventos` | Endpoint interno invocado por el Gateway para registrar trazas |
+Sustituye `CITA_ID` por el identificador obtenido al crear la cita:
 
----
+```
+curl -i -X PATCH http://localhost:8081/api/citas/CITA_ID/estado \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "nuevo_estado": "CONFIRMADA",
+    "observacion": "Paciente confirmó por teléfono"
+  }'
+```
 
-## Consultar las Bases de Datos
+Los estados válidos son `PENDIENTE`, `CONFIRMADA`, `EN_CURSO`, `COMPLETADA` y `CANCELADA`. La respuesta esperada es `200 OK`.
 
-### 1. PostgreSQL (Citas en Módulo B)
-```bash
+### Eliminar una cita
+
+```
+curl -i -X DELETE http://localhost:8081/api/citas/CITA_ID
+```
+
+La respuesta esperada es `200 OK`. Una cita en estado `COMPLETADA` o `EN_CURSO` no puede eliminarse y devuelve `409 Conflict`.
+
+Cada operación exitosa se notifica al módulo C para registrar la traza de auditoría. Si la auditoría no está disponible, el gateway registra el error en sus logs, pero no convierte una operación de negocio exitosa en un error.
+
+## Pruebas del módulo C
+
+### Pruebas HTTP contra el contenedor
+
+Con el stack levantado, ejecuta desde la raíz:
+
+```
+chmod +x modulo-c/test-api.sh
+./modulo-c/test-api.sh
+```
+
+El script usa por defecto `http://localhost:6000/api/auditoria`. También se puede proporcionar otra URL base:
+
+```
+./modulo-c/test-api.sh http://localhost:6000/api/auditoria
+```
+
+Valida el registro de eventos de creación, actualización y eliminación, la consulta de la traza por cita y el rechazo de un payload inválido.
+
+### Pruebas unitarias y de integración Java
+
+Desde `modulo-c`:
+
+```
+cd modulo-c
+mvn test
+cd ..
+```
+
+Estas pruebas no requieren levantar el stack completo cuando utilizan mocks. Para construir el módulo sin ejecutar pruebas:
+
+```
+cd modulo-c
+mvn clean package -DskipTests
+cd ..
+```
+
+## Ejecución local de un módulo
+
+La opción recomendada es Docker Compose porque configura automáticamente la red y las URLs entre servicios. Para desarrollo aislado:
+
+### Módulo A
+
+Requiere Node.js 20 o posterior:
+
+```
+cd modulo-a
+npm install
+PORT=8080 \
+MODULO_B_URL=http://localhost:5000 \
+MODULO_C_URL=http://localhost:6000/api/auditoria \
+npm start
+```
+
+En otra terminal, el gateway queda disponible en `http://localhost:8080` cuando se ejecuta fuera de Docker.
+
+### Módulo B
+
+Requiere Python 3.11 o posterior:
+
+```
+cd modulo-b
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+uvicorn app:app --host 0.0.0.0 --port 5000
+```
+
+Si PostgreSQL no está disponible, el módulo B utiliza SQLite local como respaldo de desarrollo. Para usar PostgreSQL local, configura `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD` y `DB_NAME`.
+
+### Módulo C
+
+Con Java 17 y MongoDB disponibles:
+
+```
+cd modulo-c
+mvn spring-boot:run
+```
+
+El servicio escucha en el puerto `6001` por defecto. Para conectarlo con el módulo A ejecutado localmente, usa:
+
+```
+MODULO_C_URL=http://localhost:6001/api/auditoria
+```
+
+## Consultar las bases de datos
+
+### PostgreSQL
+
+```
 docker exec -it medly-db-relacional psql -U postgres -d citas_db -c \
   "SELECT cita_id, paciente_id, estado, creado_en FROM citas ORDER BY creado_en DESC;"
 ```
 
-### 2. MongoDB Atlas Local (Auditoría en Módulo C)
-- **Vía línea de comandos (mongosh en Docker)**:
-  ```bash
-  docker exec -it medly-atlas-local mongosh "mongodb://localhost:27017/medly_audit?directConnection=true" --eval \
-    "db.eventos_auditoria.find().sort({timestamp: -1}).pretty()"
-  ```
-- **Vía MongoDB Compass / Clientes GUI**:
-  ```
-  mongodb://localhost:27017/medly_audit?directConnection=true
-  ```
+El puerto publicado para clientes externos es `5433`; dentro de la red de Compose PostgreSQL utiliza `db-relacional:5432`.
 
----
+### MongoDB Atlas Local
 
-## Base de Datos Versionada en GitHub (`modulo-c/database`)
+```
+docker exec -it medly-atlas-local mongosh \
+  "mongodb://localhost:27017/medly_audit?directConnection=true" \
+  --eval "db.eventos_auditoria.find().sort({timestamp: -1}).pretty()"
+```
 
-Para garantizar que el repositorio en GitHub cuente con la base de datos preconfigurada sin almacenar binarios pesados:
+URI para MongoDB Compass:
 
-- **Script de Inicialización y Semilla**: [`modulo-c/database/init/01-init-audit.js`](modulo-c/database/init/01-init-audit.js).
-- Al inicializar el contenedor de Atlas Local, se ejecuta automáticamente creando la base de datos `medly_audit`, la colección `eventos_auditoria`, índices optimizados y datos semilla históricos.
-- **Despliegue independiente de la BD**:
-  ```bash
-  docker compose up -d atlas-local
-  ```
+```
+mongodb://localhost:27017/medly_audit?directConnection=true
+```
 
----
+Los scripts de inicialización de la base de datos se encuentran en `modulo-c/database/init/` y se ejecutan al crear el contenedor por primera vez.
 
-## Pruebas del Módulo C
-
-El Módulo C incluye varias herramientas de prueba:
-
-1. **Script de pruebas automatizado (Bash + cURL)**:
-   ```bash
-   ./modulo-c/test-api.sh
-   ```
-   Ejecuta pruebas secuenciales de creación, cambio de estado, eliminación, consulta de trazas y validación de errores con códigos de salida en color.
-
-2. **Pruebas unitarias y de integración (Java / Maven)**:
-   ```bash
-   cd modulo-c
-   mvn test
-   ```
-   Incluye `AuditoriaControllerTest.java` (MockMvc) y `AuditoriaServiceTest.java` (JUnit 5 + Mockito).
-
-3. **Suite HTTP para IDEs**:
-   - Archivo [`modulo-c/tests.http`](modulo-c/tests.http) ejecutable directamente desde VS Code (REST Client) o IntelliJ IDEA.
-
----
-
-## Estructura del Proyecto
+## Estructura del proyecto
 
 ```
 medly/
-├── docker-compose.yml              ← Orquestación de todos los contenedores y redes
-├── README.md                       ← Documentación general del sistema
-│
-├── modulo-a/                       ← API Gateway (Node.js + Express | Puerto 8080)
-│   ├── index.js
-│   └── Dockerfile
-│
-├── modulo-b/                       ← Servicio de Dominio (FastAPI + Python | Puerto 5000)
-│   ├── app.py
-│   ├── requirements.txt
-│   └── Dockerfile
-│
-└── modulo-c/                       ← Servicio de Trazabilidad y Auditoría (Spring Boot | Puerto 6000)
-    ├── database/                   ← Infraestructura aislada de MongoDB Atlas Local
-    │   ├── README.md               ← Guía de conexión a la BD
-    │   └── init/
-    │       └── 01-init-audit.js    ← Script semilla versionado en GitHub
-    ├── src/
-    │   ├── main/java/com/medly/moduloc/
-    │   │   ├── config/             ← MongoConfig y WebConfig (CORS)
-    │   │   ├── controller/         ← AuditoriaController (Endpoints REST)
-    │   │   ├── dto/                ← Modelos de petición, respuesta y errores
-    │   │   ├── exception/          ← GlobalExceptionHandler
-    │   │   ├── model/              ← Documento MongoDB EventoAuditoria
-    │   │   ├── repository/         ← EventoAuditoriaRepository
-    │   │   └── service/            ← AuditoriaService (SHA-256 e integridad)
-    │   └── test/java/com/medly/moduloc/ ← Pruebas unitarias y de integración
-    ├── test-api.sh                 ← Script de pruebas automatizadas HTTP
-    ├── tests.http                  ← Suite de pruebas para REST Client
-    ├── Dockerfile                  ← Compilación multi-stage de Spring Boot
-    └── pom.xml                     ← Dependencias Maven
+├── docker-compose.yml       # Orquestación, red, salud y volúmenes
+├── test-containers.sh       # Prueba de integración del stack completo
+├── modulo-a/                # Gateway Node.js + Express
+├── modulo-b/                # Servicio de dominio FastAPI + PostgreSQL
+└── modulo-c/                # Auditoría Spring Boot + MongoDB
+    ├── database/init/       # Inicialización y datos semilla de MongoDB
+    ├── src/main/            # Aplicación Java
+    ├── src/test/            # Pruebas Java
+    ├── test-api.sh          # Pruebas HTTP del servicio de auditoría
+    └── tests.http           # Colección para REST Client
 ```
+
