@@ -123,7 +123,7 @@ app.post('/api/citas', async (req, res) => {
     const r = await llamar(`${MODULO_B_URL}/citas`, 'POST', { paciente_id, medico_id, fecha_hora, motivo });
     if (!r.ok) return reenviarErrorB(res, r);
 
-    const { cita_id, estado, creado_en } = r.data;
+    const { cita_id, estado, creado_en } = r.data.data || {};
     await notificarAuditoria(req, 'CREACION', cita_id, estado);
     return ok(res, 201, 'Cita médica creada exitosamente', { cita_id, estado, creado_en });
   } catch (err) {
@@ -145,7 +145,7 @@ app.patch('/api/citas/:id/estado', async (req, res) => {
     });
     if (!r.ok) return reenviarErrorB(res, r);
 
-    const { cita_id, estado_anterior, estado_actual, actualizado_en } = r.data;
+    const { cita_id, estado_anterior, estado_actual, actualizado_en } = r.data.data || {};
     await notificarAuditoria(req, 'ACTUALIZACION_ESTADO', cita_id, estado_actual);
     return ok(res, 200, 'Estado de la cita médica actualizado correctamente', {
       cita_id,
@@ -165,7 +165,7 @@ app.delete('/api/citas/:id', async (req, res) => {
     const r = await llamar(`${MODULO_B_URL}/citas/${encodeURIComponent(id)}`, 'DELETE');
     if (!r.ok) return reenviarErrorB(res, r); // aquí pasan el 404 y el 409
 
-    const { cita_id, eliminado_en } = r.data;
+    const { cita_id, eliminado_en } = r.data.data || {};
     await notificarAuditoria(req, 'ELIMINACION', cita_id, 'ELIMINADA');
     return ok(res, 200, 'Cita médica eliminada exitosamente', { cita_id, eliminado_en });
   } catch (err) {

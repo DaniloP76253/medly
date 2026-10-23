@@ -70,6 +70,20 @@ docker compose down
 > docker compose down -v
 > ```
 
+### Prueba automática de contenedores
+
+Para levantar el stack, esperar a que todos los servicios estén saludables y probar el flujo crear → actualizar → eliminar:
+
+```bash
+./test-containers.sh
+```
+
+El script deja los contenedores ejecutándose para poder inspeccionarlos. Para detenerlos automáticamente al finalizar:
+
+```bash
+./test-containers.sh --down
+```
+
 ---
 
 ## Verificar que los Servicios Están Activos

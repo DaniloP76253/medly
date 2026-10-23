@@ -70,7 +70,7 @@ services:
     environment:
       PORT: 8080
       MODULO_B_URL: http://modulo-b:5000
-      MODULO_C_URL: http://modulo-c:6000
+      MODULO_C_URL: http://modulo-c:6000/api/auditoria
     ports:
       - "8081:8080"           # Puerto del host; el servicio sigue usando 8080 dentro de Docker
     networks:
@@ -80,6 +80,12 @@ services:
         condition: service_healthy
       modulo-c:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8080/api/citas').then(r => process.exit(r.status === 404 ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   # Base de Datos NoSQL - MongoDB Atlas Local (Auditoría)
   atlas-local:
@@ -119,7 +125,7 @@ services:
       atlas-local:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:6000/eventos || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://localhost:6000/api/auditoria/eventos || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -133,4 +139,3 @@ volumes:
     driver: local
   atlas_local_config:
     driver: local
-cocker
