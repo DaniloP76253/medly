@@ -1,0 +1,19 @@
+server:
+  port: 6000
+
+spring:
+  application:
+    name: modulo-c-auditoria
+  data:
+    mongodb:
+      # Compatible con MongoDB Atlas Local (Docker) y Atlas Cloud (mongodb+srv://)
+      # directConnection=true es necesario para conectar al replica set mononodo de atlas-local
+      uri: ${MONGODB_URI:${SPRING_DATA_MONGODB_URI:mongodb://localhost:27017/medly_audit?directConnection=true}}
+      database: ${MONGODB_DATABASE:${SPRING_DATA_MONGODB_DATABASE:medly_audit}}
+
+logging:
+  level:
+    root: INFO
+    com.medly.moduloc: DEBUG
+    org.springframework.data.mongodb: INFO
+

@@ -1,0 +1,49 @@
+# Docker Compose para Módulo C (Trazabilidad y Auditoría) + MongoDB Atlas Local
+# Basado en la imagen oficial: https://hub.docker.com/r/mongodb/mongodb-atlas-local
+
+version: '3.8'
+
+services:
+  # ── MongoDB Atlas Local (Contenedor oficial de Atlas) ───────────────
+  atlas-local:
+    image: mongodb/mongodb-atlas-local:latest
+    container_name: atlas-local
+    ports:
+      - "27017:27017"
+    volumes:
+      - atlas_local_data:/data/db
+      - ./database/init:/docker-entrypoint-initdb.d:ro
+    networks:
+      - medly-network
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ── Módulo C: Servicio de Trazabilidad y Auditoría ──────────────────
+  modulo-c:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: modulo-c
+    ports:
+      - "6000:6000"
+    environment:
+      # Conexión hacia Atlas Local dentro de la red Docker con directConnection=true
+      - MONGODB_URI=mongodb://atlas-local:27017/medly_audit?directConnection=true
+      - MONGODB_DATABASE=medly_audit
+    depends_on:
+      atlas-local:
+        condition: service_healthy
+    networks:
+      - medly-network
+
+volumes:
+  atlas_local_data:
+    driver: local
+
+networks:
+  medly-network:
+    name: medly-network

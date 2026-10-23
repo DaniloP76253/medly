@@ -1,0 +1,86 @@
+### ==============================================================================
+### Suite de Pruebas HTTP - Medly Módulo C (Trazabilidad y Auditoría)
+### Puerto: 6000
+### Compatible con REST Client (VS Code), IntelliJ HTTP Client, etc.
+### ==============================================================================
+
+@baseUrl = http://localhost:6000/api/auditoria
+
+### 1. Registrar Evento: Cita Creada (Notificado por Gateway tras POST /api/citas en Módulo B)
+POST {{baseUrl}}/eventos
+Content-Type: application/json
+
+{
+  "citaId": "cita_98a7b6c5",
+  "tipoOperacion": "CREACION",
+  "estadoCita": "PENDIENTE",
+  "estadoAnterior": null,
+  "resultado": "SUCCESS",
+  "ipOrigen": "192.168.1.100",
+  "servicioOrigen": "MODULO_A",
+  "detalleOperacion": {
+    "paciente_id": "PAC-4412",
+    "medico_id": "MED-008",
+    "fecha_hora": "2026-10-20T10:30:00Z",
+    "motivo": "Control general de salud"
+  }
+}
+
+### 2. Registrar Evento: Cambio de Estado (Notificado por Gateway tras PATCH /api/citas/{id}/estado)
+POST {{baseUrl}}/eventos
+Content-Type: application/json
+
+{
+  "citaId": "cita_98a7b6c5",
+  "tipoOperacion": "ACTUALIZACION_ESTADO",
+  "estadoCita": "CONFIRMADA",
+  "estadoAnterior": "PENDIENTE",
+  "resultado": "SUCCESS",
+  "ipOrigen": "192.168.1.100",
+  "servicioOrigen": "MODULO_A",
+  "detalleOperacion": {
+    "nuevo_estado": "CONFIRMADA",
+    "observacion": "Paciente confirmó asistencia vía telefónica"
+  }
+}
+
+### 3. Registrar Evento: Eliminación de Cita (Notificado por Gateway tras DELETE /api/citas/{id})
+POST {{baseUrl}}/eventos
+Content-Type: application/json
+
+{
+  "citaId": "cita_98a7b6c5",
+  "tipoOperacion": "ELIMINACION",
+  "estadoCita": "ELIMINADA",
+  "estadoAnterior": "CONFIRMADA",
+  "resultado": "SUCCESS",
+  "ipOrigen": "192.168.1.100",
+  "servicioOrigen": "MODULO_A",
+  "detalleOperacion": {
+    "eliminado_en": "2026-10-22T20:27:00Z"
+  }
+}
+
+### 4. Prueba de Validación: Error 400 por payload incompleto
+POST {{baseUrl}}/eventos
+Content-Type: application/json
+
+{
+  "estadoCita": "PENDIENTE"
+}
+
+### 5. Consultar todos los eventos de auditoría registrados
+GET {{baseUrl}}/eventos
+
+### 6. Consultar la traza completa de la cita 'cita_98a7b6c5'
+GET {{baseUrl}}/eventos/cita/cita_98a7b6c5
+
+### 7. Filtrar eventos por tipo de operación: CREACION
+GET {{baseUrl}}/eventos/tipo/CREACION
+
+### 8. Filtrar eventos por tipo de operación: ACTUALIZACION_ESTADO
+GET {{baseUrl}}/eventos/tipo/ACTUALIZACION_ESTADO
+
+### 9. Filtrar eventos por tipo de operación: ELIMINACION
+GET {{baseUrl}}/eventos/tipo/ELIMINACION
+
