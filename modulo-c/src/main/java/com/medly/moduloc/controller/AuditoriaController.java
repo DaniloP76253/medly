@@ -22,6 +22,13 @@ public class AuditoriaController {
 
     private final AuditoriaService auditoriaService;
 
+    @GetMapping("/health")
+    public ResponseEntity<ApiResponse<String>> health() {
+        return ResponseEntity.ok(
+                ApiResponse.success(200, "Módulo C saludable", "OK")
+        );
+    }
+
     /**
      * Registra un evento de auditoría.
      * Este endpoint es invocado por el Módulo A (Gateway) cada vez que se ejecuta

@@ -1,5 +1,5 @@
 server:
-  port: 6000
+  port: 6001
 
 spring:
   application:
@@ -16,4 +16,3 @@ logging:
     root: INFO
     com.medly.moduloc: DEBUG
     org.springframework.data.mongodb: INFO
-

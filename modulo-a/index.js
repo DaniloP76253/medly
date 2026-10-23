@@ -7,7 +7,7 @@ app.use(express.json());
 // ---------- Configuración (se puede cambiar con variables de entorno) ----------
 const PORT = process.env.PORT || 8080;
 const MODULO_B_URL = process.env.MODULO_B_URL || 'http://modulo-b:5000';
-const MODULO_C_URL = process.env.MODULO_C_URL || 'http://modulo-c:6000';
+const MODULO_C_URL = process.env.MODULO_C_URL || 'http://modulo-c:6001';
 const TIMEOUT_MS = 5000;
 
 const ESTADOS_VALIDOS = ['PENDIENTE', 'CONFIRMADA', 'EN_CURSO', 'COMPLETADA', 'CANCELADA'];
@@ -83,19 +83,23 @@ function hashOperacion(evento, citaId, timestamp) {
 async function notificarAuditoria(req, evento, citaId, estado) {
   const timestamp = new Date().toISOString();
   const traza = {
-    evento,
-    cita_id: citaId,
-    estado,
-    ip_origen: req.headers['x-forwarded-for'] || req.socket.remoteAddress,
-    timestamp,
-    hash: hashOperacion(evento, citaId, timestamp),
+    citaId: String(citaId),
+    tipoOperacion: evento,
+    estadoCita: estado,
+    resultado: 'SUCCESS',
+    ipOrigen: req.headers['x-forwarded-for'] || req.socket.remoteAddress,
+    servicioOrigen: 'MODULO_A',
   };
   try {
     const r = await llamar(`${MODULO_C_URL}/eventos`, 'POST', traza);
     if (!r.ok) console.error(`[Auditoría] Módulo C respondió ${r.status}`);
     return r.ok;
   } catch (err) {
-    console.error('[Auditoría] No se pudo contactar al Módulo C:', err.message);
+    console.error('[Auditoría] No se pudo contactar al Módulo C:', {
+      message: err.message,
+      cause: err.cause?.code || err.cause?.message,
+      url: `${MODULO_C_URL}/eventos`,
+    });
     return false;
   }
 }

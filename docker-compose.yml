@@ -70,7 +70,7 @@ services:
     environment:
       PORT: 8080
       MODULO_B_URL: http://modulo-b:5000
-      MODULO_C_URL: http://modulo-c:6000/api/auditoria
+      MODULO_C_URL: http://modulo-c:6001/api/auditoria
     ports:
       - "8081:8080"           # Puerto del host; el servicio sigue usando 8080 dentro de Docker
     networks:
@@ -115,7 +115,7 @@ services:
     container_name: medly-modulo-c
     restart: unless-stopped
     ports:
-      - "6000:6000"
+      - "6000:6001"
     environment:
       MONGODB_URI: mongodb://atlas-local:27017/medly_audit?directConnection=true
       MONGODB_DATABASE: medly_audit
@@ -125,7 +125,7 @@ services:
       atlas-local:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:6000/api/auditoria/eventos || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://localhost:6001/api/auditoria/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
