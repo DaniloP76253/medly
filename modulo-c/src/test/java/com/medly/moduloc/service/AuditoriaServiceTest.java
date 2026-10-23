@@ -1,5 +1,4 @@
-package com.medly.moduloc;
-
+package com.medly.moduloc.service;
 import com.medly.moduloc.dto.EventoAuditoriaResponse;
 import com.medly.moduloc.dto.RegistroEventoRequest;
 import com.medly.moduloc.model.EventoAuditoria;
