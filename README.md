@@ -164,8 +164,7 @@ Para garantizar que el repositorio en GitHub cuente con la base de datos preconf
 - Al inicializar el contenedor de Atlas Local, se ejecuta automáticamente creando la base de datos `medly_audit`, la colección `eventos_auditoria`, índices optimizados y datos semilla históricos.
 - **Despliegue independiente de la BD**:
   ```bash
-  cd modulo-c/database
-  docker compose up -d
+  docker compose up -d atlas-local
   ```
 
 ---
@@ -210,7 +209,6 @@ medly/
 │
 └── modulo-c/                       ← Servicio de Trazabilidad y Auditoría (Spring Boot | Puerto 6000)
     ├── database/                   ← Infraestructura aislada de MongoDB Atlas Local
-    │   ├── docker-compose.yml      ← Despliegue independiente de la BD
     │   ├── README.md               ← Guía de conexión a la BD
     │   └── init/
     │       └── 01-init-audit.js    ← Script semilla versionado en GitHub

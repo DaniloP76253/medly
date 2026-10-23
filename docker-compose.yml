@@ -79,7 +79,7 @@ services:
       modulo-b:
         condition: service_healthy
       modulo-c:
-        condition: service_started
+        condition: service_healthy
 
   # Base de Datos NoSQL - MongoDB Atlas Local (Auditoría)
   atlas-local:
@@ -118,6 +118,12 @@ services:
     depends_on:
       atlas-local:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:6000/eventos || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 25s
 
 # Volúmenes persistentes
 volumes:
@@ -127,3 +133,4 @@ volumes:
     driver: local
   atlas_local_config:
     driver: local
+cocker
