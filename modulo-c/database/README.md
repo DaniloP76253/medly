@@ -51,3 +51,46 @@ Para volver a ejecutar el script `01-init-audit.js` y reiniciar la base de datos
 docker compose down -v
 docker compose up -d
 ```
+
+## Recuperación de volúmenes dañados
+
+Si MongoDB está `healthy`, pero `mongosh` muestra errores como `Does not have a
+valid replica set config` o `Our replica set config is invalid or we are not a
+member of it`, primero revisa la configuración persistida sin modificarla:
+
+```bash
+docker exec -it medly-atlas-local mongosh --quiet --eval \
+  "db.getSiblingDB('local').system.replset.findOne()"
+
+docker inspect -f "{{.Config.Hostname}}" medly-atlas-local
+```
+
+Si no necesitas conservar los datos actuales, recrea los volúmenes de MongoDB:
+
+```bash
+docker compose down -v
+docker compose up -d atlas-local
+```
+
+Espera hasta que el servicio esté disponible y verifica que el nodo sea el
+primario:
+
+```bash
+docker compose ps atlas-local
+docker exec -it medly-atlas-local mongosh --quiet --eval "db.hello()"
+docker exec -it medly-atlas-local mongosh --quiet --eval "rs.status()"
+```
+
+`db.hello()` debe mostrar `isWritablePrimary: true`. Después, puedes consultar
+la colección:
+
+```bash
+docker exec -it medly-atlas-local mongosh \
+  "mongodb://localhost:27017/medly_audit?directConnection=true" \
+  --eval "db.eventos_auditoria.find().sort({timestamp:-1}).pretty()"
+```
+
+> **Advertencia:** `docker compose down -v` elimina los volúmenes
+> `atlas_local_data` y `atlas_local_config`, por lo que borra los datos
+> actuales. El script `01-init-audit.js` se ejecutará nuevamente al crear la
+> base de datos.
