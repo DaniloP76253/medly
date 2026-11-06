@@ -101,10 +101,10 @@ services:
     networks:
       - medly-net
     healthcheck:
-      test: ["CMD", "mongosh", "--host", "127.0.0.1", "--eval", "db.adminCommand('ping')"]
+      test: ["CMD", "mongosh", "--host", "127.0.0.1", "--quiet", "--eval", "if (!db.hello().isWritablePrimary) { quit(1) }"]
       interval: 10s
       timeout: 5s
-      retries: 12
+      retries: 18
       start_period: 60s
 
   # Módulo C - Servicio de Trazabilidad y Auditoría (Spring Boot / Java) | Puerto 6000

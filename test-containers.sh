@@ -78,6 +78,20 @@ check_http() {
   printf '%s' "$body"
 }
 
+check_database_value() {
+  local description="$1"
+  local actual="$2"
+  local expected="$3"
+
+  actual="$(printf '%s' "$actual" | tr -d '[:space:]')"
+  if [[ "$actual" != "$expected" ]]; then
+    echo "FAIL: ${description}; se esperaba '${expected}' y se obtuvo '${actual}'." >&2
+    return 1
+  fi
+
+  printf 'PASS: %-55s %s\n' "$description" "$actual"
+}
+
 echo "Validando configuración de Docker Compose..."
 compose config -q
 
@@ -135,6 +149,24 @@ if [[ -z "$cita_id" ]]; then
   exit 1
 fi
 echo "      Cita creada: $cita_id"
+
+echo
+echo "Verificando persistencia de la misma entrada en ambas bases de datos..."
+postgres_count="$(compose exec -T db-relacional psql -U postgres -d citas_db -tAc \
+  "SELECT count(*) FROM citas WHERE cita_id = '$cita_id' AND paciente_id = 'PAC-TEST' AND estado = 'PENDIENTE';")"
+check_database_value \
+  "PostgreSQL contiene la cita $cita_id en estado PENDIENTE" \
+  "$postgres_count" \
+  "1"
+
+mongo_count="$(compose exec -T atlas-local mongosh \
+  "mongodb://localhost:27017/medly_audit?directConnection=true" \
+  --quiet --eval \
+  "db.eventos_auditoria.countDocuments({citaId: '$cita_id', tipoOperacion: 'CREACION', estadoCita: 'PENDIENTE', resultado: 'SUCCESS'})")"
+check_database_value \
+  "MongoDB contiene la auditoría de creación para $cita_id" \
+  "$mongo_count" \
+  "1"
 
 check_http PATCH "$GATEWAY_URL/api/citas/$cita_id/estado" 200 \
   '{"nuevo_estado":"CONFIRMADA","observacion":"Prueba automática"}' >/dev/null

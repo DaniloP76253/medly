@@ -15,6 +15,22 @@ Medly es una arquitectura de microservicios compuesta por un gateway, un servici
 
 El gateway es el punto de entrada recomendado para las operaciones de citas: `http://localhost:8081`. Los puertos internos son los que utilizan los contenedores para comunicarse entre sí.
 
+### Comunicación interna por DNS de Docker
+
+Todos los servicios pertenecen a la red privada `medly-net` definida en
+[`docker-compose.yml`](./docker-compose.yml). Dentro de esa red, los servicios
+se localizan por su nombre de Compose, no por `localhost`:
+
+- Módulo A llama a Módulo B mediante `http://modulo-b:5000`.
+- Módulo A llama a Módulo C mediante `http://modulo-c:6001/api/auditoria`.
+- Módulo B llama a PostgreSQL mediante `db-relacional:5432`.
+- Módulo C llama a MongoDB mediante `atlas-local:27017`.
+
+Estas URLs están configuradas en las variables `MODULO_B_URL`, `MODULO_C_URL`,
+`DB_HOST` y `MONGODB_URI` del Compose. Las URLs `localhost` documentadas para
+el host (`8081`, `5000`, `6000`, `5433` y `27017`) son únicamente puntos de
+acceso externo para desarrollo y pruebas.
+
 ## Requisitos
 
 Para ejecutar el sistema completo:
@@ -44,7 +60,7 @@ docker compose config -q
 docker compose up --build -d
 ```
 
-Compose inicia los servicios en el orden necesario: primero las bases de datos, después el módulo B y el módulo C, y finalmente el módulo A. Las comprobaciones de salud evitan que un servicio dependiente se inicie antes de tiempo.
+Compose inicia los servicios en el orden necesario: primero las bases de datos, después el módulo B y el módulo C, y finalmente el módulo A. La comprobación de MongoDB espera específicamente a que el nodo sea escribible (`isWritablePrimary`), evitando que el módulo C intente registrar auditorías durante la elección inicial del primario.
 
 Para ver el estado de los servicios:
 
@@ -84,17 +100,21 @@ curl -i http://localhost:8081/api/citas
 
 Las dos primeras deben responder correctamente. La última debe devolver `404` porque se está consultando una ruta no existente sin usar un método de negocio; esa respuesta confirma que el gateway está disponible.
 
-## Prueba automática del flujo completo
+## Prueba automática del flujo completo y persistencia
 
 El script de integración construye y levanta todo el stack, espera a que los cinco servicios estén saludables y prueba el flujo:
 
 1. Crear una cita mediante el módulo A.
-    
-2. Cambiar su estado mediante el módulo A.
-    
-3. Eliminarla mediante el módulo A.
-    
-4. Verificar el rechazo de un payload inválido.
+2. Comprobar que esa cita fue persistida en PostgreSQL (Módulo B).
+3. Comprobar que el evento de creación de esa misma cita fue persistido en MongoDB (Módulo C).
+4. Cambiar su estado mediante el módulo A.
+5. Eliminarla mediante el módulo A.
+6. Verificar el rechazo de un payload inválido.
+
+Las comprobaciones de las bases de datos se realizan con `psql` y `mongosh`
+dentro de sus contenedores. Por tanto, además de validar las respuestas HTTP,
+demuestran que una entrada atraviesa el gateway, ambos servicios y ambas
+bases de datos.
     
 
 Desde la raíz del repositorio:
@@ -289,4 +309,3 @@ medly/
     ├── test-api.sh          # Pruebas HTTP del servicio de auditoría
     └── tests.http           # Colección para REST Client
 ```
-
