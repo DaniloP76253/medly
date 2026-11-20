@@ -15,6 +15,11 @@ database/
 
 La base de datos de MongoDB Atlas Local (`medly-atlas-local`) se orquesta de forma unificada desde el archivo principal [`docker-compose.yml`](../../docker-compose.yml) en la raíz del proyecto.
 
+El servicio fija `hostname: atlas-local`, que es el nombre estable que MongoDB
+usa para anunciar el miembro del Replica Set dentro de la red Compose. También
+se conserva el healthcheck provisto por la imagen de Atlas Local; este espera
+MongoDB, Search y los scripts de inicialización.
+
 ```bash
 # Desde la raíz del proyecto:
 docker compose up -d atlas-local
@@ -52,45 +57,54 @@ docker compose down -v
 docker compose up -d
 ```
 
-## Recuperación de volúmenes dañados
+## Configuración persistida del Replica Set
 
-Si MongoDB está `healthy`, pero `mongosh` muestra errores como `Does not have a
-valid replica set config` o `Our replica set config is invalid or we are not a
-member of it`, primero revisa la configuración persistida sin modificarla:
+Si los logs muestran `Locally stored replica set configuration does not have a
+valid entry for the current node`, `NodeNotFound`, o un `localConfigSetName`
+distinto de `commandLineSetName`, el volumen conserva el hostname anterior del
+contenedor. Compose fija ahora `hostname: atlas-local`, pero MongoDB no cambia
+automáticamente la configuración ya guardada en `atlas_local_config`.
 
-```bash
-docker exec -it medly-atlas-local mongosh --quiet --eval \
-  "db.getSiblingDB('local').system.replset.findOne()"
-
-docker inspect -f "{{.Config.Hostname}}" medly-atlas-local
-```
-
-Si no necesitas conservar los datos actuales, recrea los volúmenes de MongoDB:
+Confirma los nombres de los volúmenes antes de hacer cambios:
 
 ```bash
-docker compose down -v
-docker compose up -d atlas-local
+sudo docker inspect medly-atlas-local --format \
+  '{{range .Mounts}}{{if .Name}}{{.Name}} -> {{.Destination}}{{println}}{{end}}{{end}}'
 ```
 
-Espera hasta que el servicio esté disponible y verifica que el nodo sea el
-primario:
+Si necesitas conservar los datos de auditoría, **no borres los volúmenes**;
+respalda la base y reconfigura el Replica Set antes de continuar. Para este
+prototipo, si los datos de auditoría pueden regenerarse desde la semilla, elimina
+solo los volúmenes de Atlas Local. `pgdata` no se toca:
+
+```bash
+sudo docker compose down
+sudo docker volume rm medly_atlas_local_data medly_atlas_local_config
+sudo docker compose up -d atlas-local
+```
+
+Los nombres `medly_atlas_local_data` y `medly_atlas_local_config` corresponden
+al proyecto Compose llamado `medly`. Si el comando `inspect` anterior mostró
+otros nombres, usa esos nombres exactos. Espera hasta que el servicio esté
+`healthy` y verifica que el hostname fijo sea miembro y primario:
 
 ```bash
 docker compose ps atlas-local
-docker exec -it medly-atlas-local mongosh --quiet --eval "db.hello()"
-docker exec -it medly-atlas-local mongosh --quiet --eval "rs.status()"
+sudo docker exec medly-atlas-local mongosh --quiet --eval "db.hello()"
+sudo docker exec medly-atlas-local mongosh --quiet --eval "rs.status()"
 ```
 
-`db.hello()` debe mostrar `isWritablePrimary: true`. Después, puedes consultar
-la colección:
+`db.hello()` debe mostrar `isWritablePrimary: true` y `me: "atlas-local:27017"`.
+Después, levanta el resto del sistema y consulta la colección:
 
 ```bash
-docker exec -it medly-atlas-local mongosh \
+sudo docker compose up --build -d
+sudo docker exec medly-atlas-local mongosh \
   "mongodb://localhost:27017/medly_audit?directConnection=true" \
   --eval "db.eventos_auditoria.find().sort({timestamp:-1}).pretty()"
 ```
 
-> **Advertencia:** `docker compose down -v` elimina los volúmenes
-> `atlas_local_data` y `atlas_local_config`, por lo que borra los datos
-> actuales. El script `01-init-audit.js` se ejecutará nuevamente al crear la
-> base de datos.
+> **Advertencia:** eliminar `medly_atlas_local_data` borra los eventos de
+> auditoría actuales; al recrear MongoDB, `01-init-audit.js` vuelve a insertar
+> los datos semilla. No uses `docker compose down -v` para este problema: también
+> borraría el volumen de PostgreSQL.

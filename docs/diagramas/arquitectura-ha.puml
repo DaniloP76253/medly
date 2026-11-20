@@ -1,0 +1,89 @@
+@startuml
+title Medly — Topología extendida de alta disponibilidad
+left to right direction
+skinparam shadowing false
+skinparam componentStyle rectangle
+skinparam packageStyle rectangle
+skinparam defaultTextAlignment center
+skinparam ArrowColor #55777A
+skinparam packageBorderColor #8FB4B1
+skinparam packageBackgroundColor #F7FBFA
+
+actor "Usuario" as User
+
+package "Red frontend" as FrontNet {
+  component "VIP de entrada\nHAProxy + Keepalived ×2" as Edge
+  component "Frontend estático\nNginx ×2" as UI
+}
+
+package "Red de servicios" as ServiceNet {
+  component "API Gateway\nstateless ×2" as Gateway
+  component "Módulo B · Dominio\nstateless ×3" as Domain
+  component "Módulo C · Auditoría\nstateless ×3" as Audit
+  component "VIP SQL\nHAProxy + Keepalived ×2\nwrite / read" as PgProxy
+  component "Routers MongoDB\nmongos ×2" as Mongos
+}
+
+package "Red de datos" as DataNet {
+  package "PostgreSQL · Patroni" as PgCluster {
+    database "PG primario\nPatroni" as PGPrimary
+    database "PG réplica síncrona\nPatroni" as PGSync
+    database "PG réplica\nPatroni" as PGReplica
+  }
+  component "etcd quorum ×3" as Etcd
+
+  package "MongoDB · clúster fragmentado" as MongoCluster {
+    package "Config Server Replica Set ×3" as ConfigRS {
+      database "config-1" as Config1
+      database "config-2" as Config2
+      database "config-3" as Config3
+    }
+    package "Shard 1 · Replica Set ×3" as ShardOne {
+      database "mongo-1-a\nprimario" as M1A
+      database "mongo-1-b\nréplica" as M1B
+      database "mongo-1-c\nréplica" as M1C
+    }
+    package "Shard 2 · Replica Set ×3" as ShardTwo {
+      database "mongo-2-a\nprimario" as M2A
+      database "mongo-2-b\nréplica" as M2B
+      database "mongo-2-c\nréplica" as M2C
+    }
+  }
+}
+
+User --> Edge : HTTPS
+Edge --> UI : GET /
+Edge --> Gateway : /api · round robin
+Gateway --> Domain : citas
+Gateway --> Audit : eventos de auditoría
+Domain --> PgProxy : escritura / lectura
+PgProxy --> PGPrimary : escrituras
+PgProxy --> PGSync : lecturas / sync
+PgProxy --> PGReplica : lecturas
+PGPrimary ..> PGSync : streaming síncrono
+PGPrimary ..> PGReplica : streaming
+Etcd <..> PGPrimary : elección Patroni
+Etcd <..> PGSync : elección Patroni
+Etcd <..> PGReplica : elección Patroni
+Audit --> Mongos : URI con ambos routers
+Mongos --> ConfigRS : metadatos del clúster
+Mongos --> ShardOne : shard key citaId
+Mongos --> ShardTwo : shard key citaId
+M1A ..> M1B : replicación
+M1A ..> M1C : replicación
+M2A ..> M2B : replicación
+M2A ..> M2C : replicación
+Config1 ..> Config2 : replicación
+Config1 ..> Config3 : replicación
+
+note bottom of PgCluster
+  citas: particionamiento HASH(cita_id), 8 particiones
+end note
+note bottom of MongoCluster
+  eventos_auditoria: shard key { citaId: "hashed" }
+end note
+note bottom of ServiceNet
+  Propuesta objetivo. El Compose local solo levanta
+  una instancia por servicio y no representa esta HA.
+end note
+@enduml

@@ -81,7 +81,7 @@ services:
       modulo-c:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://localhost:8080/api/citas').then(r => process.exit(r.status === 404 ? 0 : 1)).catch(() => process.exit(1))"]
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8080/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -90,6 +90,7 @@ services:
   # Base de Datos NoSQL - MongoDB Atlas Local (Auditoría)
   atlas-local:
     image: mongodb/mongodb-atlas-local:latest
+    hostname: atlas-local
     container_name: medly-atlas-local
     restart: unless-stopped
     ports:
@@ -100,12 +101,6 @@ services:
       - ./modulo-c/database/init:/docker-entrypoint-initdb.d:ro
     networks:
       - medly-net
-    healthcheck:
-      test: ["CMD", "mongosh", "--host", "127.0.0.1", "--quiet", "--eval", "if (!db.hello().isWritablePrimary) { quit(1) }"]
-      interval: 10s
-      timeout: 5s
-      retries: 18
-      start_period: 60s
 
   # Módulo C - Servicio de Trazabilidad y Auditoría (Spring Boot / Java) | Puerto 6000
   modulo-c:
@@ -130,6 +125,27 @@ services:
       timeout: 5s
       retries: 5
       start_period: 25s
+
+  # Frontend SPA del panel de operaciones; Nginx reenvía /api al gateway.
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: medly-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    networks:
+      - medly-net
+    depends_on:
+      modulo-a:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost/health | grep -q ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
 
 # Volúmenes persistentes
 volumes:

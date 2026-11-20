@@ -2,18 +2,21 @@
 
 Medly es una arquitectura de microservicios compuesta por un gateway, un servicio de dominio y un servicio de auditoría. El proyecto utiliza PostgreSQL para las citas y MongoDB Atlas Local para la trazabilidad.
 
+El resumen de la entrega de frontend y arquitectura HA está en
+[`README-ENTREGA.md`](./README-ENTREGA.md).
+
 ## Arquitectura y puertos
 
-|   |   |   |   |
-|---|---|---|---|
 |**Componente**|**Tecnología**|**Puerto dentro de Docker**|**Puerto en el host**|
+|---|---|---|---|
+|Frontend - Panel de operaciones|HTML, CSS, JavaScript + Nginx|`80`|`3000`|
 |Módulo A - API Gateway|Node.js + Express|`8080`|`8081`|
 |Módulo B - Servicio de dominio|Python + FastAPI|`5000`|`5000`|
 |Módulo C - Auditoría|Java 17 + Spring Boot|`6001`|`6000`|
 |PostgreSQL|PostgreSQL 16|`5432`|`5433`|
 |MongoDB|MongoDB Atlas Local|`27017`|`27017`|
 
-El gateway es el punto de entrada recomendado para las operaciones de citas: `http://localhost:8081`. Los puertos internos son los que utilizan los contenedores para comunicarse entre sí.
+El panel está disponible en `http://localhost:3000`. El gateway permanece disponible para pruebas directas en `http://localhost:8081`. Los puertos internos son los que utilizan los contenedores para comunicarse entre sí.
 
 ### Comunicación interna por DNS de Docker
 
@@ -23,13 +26,22 @@ se localizan por su nombre de Compose, no por `localhost`:
 
 - Módulo A llama a Módulo B mediante `http://modulo-b:5000`.
 - Módulo A llama a Módulo C mediante `http://modulo-c:6001/api/auditoria`.
+- El frontend entrega los archivos estáticos en el puerto `3000` y reenvía las llamadas `/api` al Módulo A por la red privada.
 - Módulo B llama a PostgreSQL mediante `db-relacional:5432`.
 - Módulo C llama a MongoDB mediante `atlas-local:27017`.
 
 Estas URLs están configuradas en las variables `MODULO_B_URL`, `MODULO_C_URL`,
 `DB_HOST` y `MONGODB_URI` del Compose. Las URLs `localhost` documentadas para
-el host (`8081`, `5000`, `6000`, `5433` y `27017`) son únicamente puntos de
+el host (`3000`, `8081`, `5000`, `6000`, `5433` y `27017`) son únicamente puntos de
 acceso externo para desarrollo y pruebas.
+
+El panel permite crear citas individuales o en ráfaga, cambiar su estado,
+eliminarlas, filtrar y registrar eventos de auditoría y comprobar la salud
+individual de los servicios. Los identificadores de nodo se envían en las
+respuestas y se guardan en el detalle de cada evento. El catálogo funcional del
+frontend está en [`README-ENTREGA.md`](./README-ENTREGA.md). En el Compose local
+se ejecuta una instancia por módulo; el estado del panel distingue este entorno
+de la topología HA propuesta en [la arquitectura extendida](./docs/arquitectura-ha.md).
 
 ## Requisitos
 
@@ -60,7 +72,7 @@ docker compose config -q
 docker compose up --build -d
 ```
 
-Compose inicia los servicios en el orden necesario: primero las bases de datos, después el módulo B y el módulo C, y finalmente el módulo A. La comprobación de MongoDB espera específicamente a que el nodo sea escribible (`isWritablePrimary`), evitando que el módulo C intente registrar auditorías durante la elección inicial del primario.
+Compose inicia los servicios en el orden necesario: primero las bases de datos, después los módulos B y C, luego el gateway y finalmente el frontend. Atlas Local conserva un hostname estable (`atlas-local`) para la configuración de su Replica Set y usa el healthcheck incluido en la imagen para esperar a que MongoDB, Search y los scripts de inicialización estén listos.
 
 Para ver el estado de los servicios:
 
@@ -86,23 +98,23 @@ Para detenerlos y borrar también los volúmenes persistentes (reinicio completo
 docker compose down -v
 ```
 
-> La primera ejecución puede tardar porque construye las imágenes y descarga PostgreSQL, MongoDB, Node.js, Python y Java.
+> La primera ejecución puede tardar porque construye las imágenes y descarga PostgreSQL, MongoDB, Nginx, Node.js, Python y Java.
 
 ## Comprobación de salud
 
 Ejecuta estas comprobaciones después de que `docker compose ps` muestre los servicios como `healthy`:
 
 ```
-curl http://localhost:5000/health
-curl http://localhost:6000/api/auditoria/health
-curl -i http://localhost:8081/api/citas
+curl http://localhost:3000/health
+curl http://localhost:8081/health
+curl http://localhost:8081/api/dashboard/health
 ```
 
-Las dos primeras deben responder correctamente. La última debe devolver `404` porque se está consultando una ruta no existente sin usar un método de negocio; esa respuesta confirma que el gateway está disponible.
+El frontend sirve su comprobación en el puerto `3000`; el gateway informa su nodo en `/health`. El endpoint del dashboard resume también el estado de los módulos B y C y de PostgreSQL y MongoDB.
 
 ## Prueba automática del flujo completo y persistencia
 
-El script de integración construye y levanta todo el stack, espera a que los cinco servicios estén saludables y prueba el flujo:
+El script de integración construye y levanta el stack y espera a que los cinco servicios del flujo de datos estén saludables antes de probar:
 
 1. Crear una cita mediante el módulo A.
 2. Comprobar que esa cita fue persistida en PostgreSQL (Módulo B).
@@ -296,9 +308,15 @@ Los scripts de inicialización de la base de datos se encuentran en `modulo-c/da
 
 ## Estructura del proyecto
 
+La descripción y decisiones de la arquitectura objetivo están en
+[`docs/arquitectura-ha.md`](./docs/arquitectura-ha.md); sus fuentes PlantUML están
+en [`docs/diagramas/`](./docs/diagramas/).
+
 ```
 medly/
 ├── docker-compose.yml       # Orquestación, red, salud y volúmenes
+├── frontend/                # Panel SPA y proxy Nginx hacia el gateway
+├── docs/diagramas/          # Diagramas PlantUML de topología y flujos
 ├── test-containers.sh       # Prueba de integración del stack completo
 ├── modulo-a/                # Gateway Node.js + Express
 ├── modulo-b/                # Servicio de dominio FastAPI + PostgreSQL

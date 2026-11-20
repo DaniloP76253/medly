@@ -13,8 +13,10 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
+import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 @Service
@@ -31,6 +33,11 @@ public class AuditoriaService {
      */
     public EventoAuditoriaResponse registrarEvento(RegistroEventoRequest request) {
         Instant ahora = Instant.now();
+        Map<String, Object> detalleOperacion = request.getDetalleOperacion() == null
+                ? new HashMap<>()
+                : new HashMap<>(request.getDetalleOperacion());
+        detalleOperacion.put("nodoAuditoria", System.getenv().getOrDefault(
+                "NODE_ID", System.getenv().getOrDefault("HOSTNAME", "modulo-c-local")));
 
         TipoOperacion tipo = TipoOperacion.valueOf(request.getTipoOperacion().toUpperCase());
 
@@ -49,7 +56,7 @@ public class AuditoriaService {
                 .timestamp(ahora)
                 .ipOrigen(request.getIpOrigen())
                 .hashOperacion(hash)
-                .detalleOperacion(request.getDetalleOperacion())
+                .detalleOperacion(detalleOperacion)
                 .servicioOrigen(request.getServicioOrigen())
                 .resultado(request.getResultado())
                 .build();

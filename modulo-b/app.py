@@ -10,7 +10,7 @@ from fastapi import FastAPI, APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import create_engine, Column, String, Text, DateTime
+from sqlalchemy import create_engine, Column, String, Text, DateTime, text
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
 
 import socket
@@ -21,6 +21,7 @@ DB_PASSWORD = os.getenv("DB_PASSWORD", "postgres")
 DB_HOST = os.getenv("DB_HOST", "db-relacional")
 DB_PORT = os.getenv("DB_PORT", "5432")
 DB_NAME = os.getenv("DB_NAME", "citas_db")
+NODE_ID = os.getenv("NODE_ID", os.getenv("HOSTNAME", socket.gethostname()))
 
 def is_db_reachable(host: str, port: int, timeout: float = 0.6) -> bool:
     try:
@@ -111,6 +112,13 @@ app = FastAPI(
 )
 
 
+@app.middleware("http")
+async def identify_node(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Node-Id"] = NODE_ID
+    return response
+
+
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     detalles = []
@@ -159,7 +167,32 @@ router = APIRouter()
 
 
 
-# Endpoint 1: Crear una Cita Médica (POST /citas o /api/citas)
+# Endpoint 1: Consultar Citas (GET /citas o /api/citas)
+@router.get("", status_code=status.HTTP_200_OK)
+def listar_citas(db: Session = Depends(get_db)):
+    citas = db.query(CitaModel).order_by(CitaModel.creado_en.desc()).limit(100).all()
+    return {
+        "status": "SUCCESS",
+        "codigo": 200,
+        "mensaje": "Citas obtenidas exitosamente",
+        "data": [
+            {
+                "cita_id": cita.cita_id,
+                "paciente_id": cita.paciente_id,
+                "medico_id": cita.medico_id,
+                "fecha_hora": cita.fecha_hora,
+                "motivo": cita.motivo,
+                "estado": cita.estado,
+                "observacion": cita.observacion,
+                "creado_en": cita.creado_en,
+                "actualizado_en": cita.actualizado_en,
+            }
+            for cita in citas
+        ],
+    }
+
+
+# Endpoint 2: Crear una Cita Médica (POST /citas o /api/citas)
 @router.post("", status_code=status.HTTP_201_CREATED)
 def crear_cita(payload: CitaCreateRequest, db: Session = Depends(get_db)):
     # Generar identificador de cita con formato cita_<8_hex>
@@ -308,7 +341,26 @@ app.include_router(router, prefix="/citas", tags=["Citas"])
 
 @app.get("/health", tags=["Health"])
 def health_check():
-    return {"status": "UP", "service": "modulo-b-dominio"}
+    database_name = "SQLite" if DATABASE_URL.startswith("sqlite") else "PostgreSQL"
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("SELECT 1"))
+        return {
+            "status": "UP",
+            "service": "modulo-b-dominio",
+            "nodeId": NODE_ID,
+            "database": {"name": database_name, "status": "UP"},
+        }
+    except Exception:
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={
+                "status": "DOWN",
+                "service": "modulo-b-dominio",
+                "nodeId": NODE_ID,
+                "database": {"name": database_name, "status": "DOWN"},
+            },
+        )
 
 
 if __name__ == "__main__":

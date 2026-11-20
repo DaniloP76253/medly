@@ -1,0 +1,62 @@
+@startuml
+title Medly — Retiro de réplica y failover de base de datos
+autonumber
+skinparam shadowing false
+skinparam sequenceMessageAlign center
+skinparam ArrowColor #55777A
+
+participant "HAProxy de servicios" as LB
+participant "Módulo B · nodo 1" as B1
+participant "Módulo B · nodo 2" as B2
+participant "HAProxy SQL\npar redundante" as PgProxy
+participant "Patroni\nPG primario" as P1
+participant "Patroni\nPG réplica síncrona" as P2
+participant "etcd\nquorum ×3" as Etcd
+participant "Módulo C" as C
+participant "mongos ×2" as Mongos
+participant "Shard Mongo\nReplica Set ×3" as MongoRS
+
+group Caída de una réplica de aplicación
+  LB -> B1 : health check
+  B1 --> LB : no responde
+  LB -> B1 : segundo health check
+  B1 --> LB : timeout
+  LB -> LB : marca B1 DOWN y lo retira
+  LB -> B2 : siguiente petición
+  B2 --> LB : respuesta saludable
+  note over LB,B2
+    Las peticiones nuevas continúan por B2.
+    No se afirma que una petición en curso
+    sobreviva a la caída de B1.
+  end note
+end
+
+group Caída del primario PostgreSQL
+  PgProxy -> P1 : health check / conexión
+  P1 --> PgProxy : sin respuesta
+  P2 -> Etcd : solicita elección
+  Etcd --> P2 : quorum confirma candidatura
+  P2 -> P2 : se promueve a primario
+  PgProxy -> P2 : verifica rol primario
+  PgProxy -> PgProxy : actualiza destino de escritura
+  B2 -> PgProxy : nueva conexión al endpoint estable
+  PgProxy -> P2 : INSERT cita
+  P2 --> B2 : commit
+  note over P1,P2
+    La réplica síncrona contiene los commits confirmados.
+    El servicio usa el mismo endpoint SQL después del cambio.
+  end note
+end
+
+group Elección de primario MongoDB
+  C -> Mongos : escritura con retryWrites y majority
+  Mongos -> MongoRS : selecciona primario del shard
+  MongoRS --> Mongos : elección completada
+  Mongos --> C : operación confirmada
+end
+
+note bottom
+  Los proxies también deben desplegarse por pares en hosts distintos.
+  Registrar claves de idempotencia para reintentos con resultado ambiguo.
+end note
+@enduml

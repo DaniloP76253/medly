@@ -2,12 +2,17 @@ const express = require('express');
 const crypto = require('crypto');
 
 const app = express();
+const NODE_ID = process.env.NODE_ID || process.env.HOSTNAME || 'modulo-a-local';
 app.use(express.json());
+app.use((req, res, next) => {
+  res.setHeader('X-Node-Id', NODE_ID);
+  next();
+});
 
 // ---------- Configuración (se puede cambiar con variables de entorno) ----------
 const PORT = process.env.PORT || 8080;
 const MODULO_B_URL = process.env.MODULO_B_URL || 'http://modulo-b:5000';
-const MODULO_C_URL = process.env.MODULO_C_URL || 'http://modulo-c:6001';
+const MODULO_C_URL = process.env.MODULO_C_URL || 'http://modulo-c:6001/api/auditoria';
 const TIMEOUT_MS = 5000;
 
 const ESTADOS_VALIDOS = ['PENDIENTE', 'CONFIRMADA', 'EN_CURSO', 'COMPLETADA', 'CANCELADA'];
@@ -71,7 +76,12 @@ async function llamar(url, method, body) {
   } catch (_) {
     /* respuesta sin JSON */
   }
-  return { status: resp.status, ok: resp.ok, data };
+  return {
+    status: resp.status,
+    ok: resp.ok,
+    data,
+    nodeId: resp.headers.get('x-node-id'),
+  };
 }
 
 // Genera un hash único de la operación (para la traza de auditoría)
@@ -80,7 +90,7 @@ function hashOperacion(evento, citaId, timestamp) {
 }
 
 // Notifica al Módulo C. Si falla, NO tumba la operación principal: solo se registra en consola.
-async function notificarAuditoria(req, evento, citaId, estado) {
+async function notificarAuditoria(req, evento, citaId, estado, nodoDominio) {
   const timestamp = new Date().toISOString();
   const traza = {
     citaId: String(citaId),
@@ -89,6 +99,10 @@ async function notificarAuditoria(req, evento, citaId, estado) {
     resultado: 'SUCCESS',
     ipOrigen: req.headers['x-forwarded-for'] || req.socket.remoteAddress,
     servicioOrigen: 'MODULO_A',
+    detalleOperacion: {
+      nodoGateway: NODE_ID,
+      nodoDominio: nodoDominio || 'no-disponible',
+    },
   };
   try {
     const r = await llamar(`${MODULO_C_URL}/eventos`, 'POST', traza);
@@ -117,6 +131,145 @@ function errorDeRed(res, err) {
   ]);
 }
 
+async function consultarSalud(url) {
+  const response = await fetch(url, { signal: AbortSignal.timeout(TIMEOUT_MS) });
+  const body = await response.json().catch(() => ({}));
+  const data = body.data && typeof body.data === 'object' ? body.data : body;
+  return {
+    status: response.ok && data.status !== 'DOWN' ? 'UP' : 'DOWN',
+    nodeId: data.nodeId || response.headers.get('x-node-id') || 'desconocido',
+    data,
+  };
+}
+
+async function proxyAuditoria(req, res, path, method = 'GET', body) {
+  try {
+    const result = await llamar(`${MODULO_C_URL}${path}`, method, body);
+    res.setHeader('X-Audit-Node', result.nodeId || 'desconocido');
+    return res.status(result.status).json(result.data);
+  } catch (err) {
+    console.error('[Gateway] Error llamando al Módulo C:', err.message);
+    return fail(res, 503, 'Auditoría no disponible', [
+      { campo: 'modulo-c', mensaje: 'No se pudo comunicar con el servicio de auditoría.' },
+    ]);
+  }
+}
+
+async function proxySalud(res, url, headerName, serviceName) {
+  try {
+    const result = await llamar(url, 'GET');
+    res.setHeader(headerName, result.nodeId || 'desconocido');
+    return res.status(result.status).json(result.data);
+  } catch (err) {
+    return fail(res, 503, `${serviceName} no disponible`, [
+      { campo: serviceName, mensaje: `No se pudo consultar la salud de ${serviceName}.` },
+    ]);
+  }
+}
+
+function servicioNoDisponible(err) {
+  return { status: 'DOWN', nodeId: 'no-disponible', detail: err.message };
+}
+
+app.get('/health', (req, res) => {
+  return res.json({ status: 'UP', service: 'modulo-a-gateway', nodeId: NODE_ID });
+});
+
+app.get('/api/health/gateway', (req, res) => {
+  return res.json({ status: 'UP', service: 'modulo-a-gateway', nodeId: NODE_ID });
+});
+
+app.get('/api/health/dominio', (req, res) =>
+  proxySalud(res, `${MODULO_B_URL}/health`, 'X-Domain-Node', 'Módulo B'));
+
+app.get('/api/health/auditoria', (req, res) =>
+  proxySalud(res, `${MODULO_C_URL}/health`, 'X-Audit-Node', 'Módulo C'));
+
+app.get('/api/dashboard/health', async (req, res) => {
+  const [dominioResult, auditoriaResult] = await Promise.allSettled([
+    consultarSalud(`${MODULO_B_URL}/health`),
+    consultarSalud(`${MODULO_C_URL}/health`),
+  ]);
+  const dominio = dominioResult.status === 'fulfilled'
+    ? dominioResult.value
+    : servicioNoDisponible(dominioResult.reason);
+  const auditoria = auditoriaResult.status === 'fulfilled'
+    ? auditoriaResult.value
+    : servicioNoDisponible(auditoriaResult.reason);
+
+  const nodes = [
+    { name: 'API Gateway', service: 'gateway', status: 'UP', nodeId: NODE_ID },
+    { name: 'Dominio', service: 'modulo-b', status: dominio.status, nodeId: dominio.nodeId },
+    { name: 'Auditoría', service: 'modulo-c', status: auditoria.status, nodeId: auditoria.nodeId },
+  ];
+  const databases = [
+    { name: dominio.data?.database?.name || 'PostgreSQL', status: dominio.data?.database?.status || 'UNKNOWN' },
+    { name: auditoria.data?.database?.name || 'MongoDB', status: auditoria.data?.database?.status || 'UNKNOWN' },
+  ];
+  const healthy = nodes.every((node) => node.status === 'UP')
+    && databases.every((database) => database.status === 'UP');
+
+  return res.json({
+    status: healthy ? 'UP' : 'DEGRADED',
+    data: {
+      nodes,
+      databases,
+      failoverEvents: [],
+      note: 'El entorno local usa una instancia por servicio; el failover automático está en la arquitectura propuesta.',
+    },
+  });
+});
+
+app.get('/api/citas', async (req, res) => {
+  try {
+    const result = await llamar(`${MODULO_B_URL}/api/citas`, 'GET');
+    res.setHeader('X-Domain-Node', result.nodeId || 'desconocido');
+    return res.status(result.status).json(result.data);
+  } catch (err) {
+    return errorDeRed(res, err);
+  }
+});
+
+app.get('/api/auditoria/eventos', async (req, res) => {
+  return proxyAuditoria(req, res, '/eventos');
+});
+
+app.get('/api/auditoria/eventos/cita/:citaId', (req, res) =>
+  proxyAuditoria(req, res, `/eventos/cita/${encodeURIComponent(req.params.citaId)}`));
+
+app.get('/api/auditoria/eventos/tipo/:tipoOperacion', (req, res) => {
+  const tipos = ['CREACION', 'ACTUALIZACION_ESTADO', 'ELIMINACION'];
+  const tipoOperacion = req.params.tipoOperacion.toUpperCase();
+  if (!tipos.includes(tipoOperacion)) {
+    return fail(res, 400, 'Tipo de operación inválido', [
+      { campo: 'tipoOperacion', mensaje: `Debe ser uno de: ${tipos.join(', ')}.` },
+    ]);
+  }
+  return proxyAuditoria(req, res, `/eventos/tipo/${encodeURIComponent(tipoOperacion)}`);
+});
+
+app.get('/api/auditoria/eventos/rango', (req, res) => {
+  const { desde, hasta } = req.query;
+  if (!desde || !hasta || Number.isNaN(Date.parse(desde)) || Number.isNaN(Date.parse(hasta))) {
+    return fail(res, 400, 'Rango de fechas inválido', [
+      { campo: 'rango', mensaje: 'Indica desde y hasta en formato ISO 8601.' },
+    ]);
+  }
+  const params = new URLSearchParams({ desde, hasta });
+  return proxyAuditoria(req, res, `/eventos/rango?${params.toString()}`);
+});
+
+app.post('/api/auditoria/eventos', (req, res) => {
+  const { citaId, tipoOperacion, resultado } = req.body || {};
+  const detalles = [];
+  if (!esTextoNoVacio(citaId)) detalles.push({ campo: 'citaId', mensaje: 'El ID de la cita es obligatorio.' });
+  if (!esTextoNoVacio(tipoOperacion)) detalles.push({ campo: 'tipoOperacion', mensaje: 'El tipo de operación es obligatorio.' });
+  if (!esTextoNoVacio(resultado)) detalles.push({ campo: 'resultado', mensaje: 'El resultado es obligatorio.' });
+  if (detalles.length) return fail(res, 400, 'Faltan datos para registrar el evento', detalles);
+
+  return proxyAuditoria(req, res, '/eventos', 'POST', req.body);
+});
+
 // ---------- Endpoint 1: crear cita ----------
 app.post('/api/citas', async (req, res) => {
   const detalles = validarCrearCita(req.body || {});
@@ -125,10 +278,11 @@ app.post('/api/citas', async (req, res) => {
   const { paciente_id, medico_id, fecha_hora, motivo } = req.body;
   try {
     const r = await llamar(`${MODULO_B_URL}/citas`, 'POST', { paciente_id, medico_id, fecha_hora, motivo });
+    res.setHeader('X-Domain-Node', r.nodeId || 'desconocido');
     if (!r.ok) return reenviarErrorB(res, r);
 
     const { cita_id, estado, creado_en } = r.data.data || {};
-    await notificarAuditoria(req, 'CREACION', cita_id, estado);
+    await notificarAuditoria(req, 'CREACION', cita_id, estado, r.nodeId);
     return ok(res, 201, 'Cita médica creada exitosamente', { cita_id, estado, creado_en });
   } catch (err) {
     return errorDeRed(res, err);
@@ -147,10 +301,11 @@ app.patch('/api/citas/:id/estado', async (req, res) => {
       nuevo_estado,
       observacion,
     });
+    res.setHeader('X-Domain-Node', r.nodeId || 'desconocido');
     if (!r.ok) return reenviarErrorB(res, r);
 
     const { cita_id, estado_anterior, estado_actual, actualizado_en } = r.data.data || {};
-    await notificarAuditoria(req, 'ACTUALIZACION_ESTADO', cita_id, estado_actual);
+    await notificarAuditoria(req, 'ACTUALIZACION_ESTADO', cita_id, estado_actual, r.nodeId);
     return ok(res, 200, 'Estado de la cita médica actualizado correctamente', {
       cita_id,
       estado_anterior,
@@ -167,10 +322,11 @@ app.delete('/api/citas/:id', async (req, res) => {
   const { id } = req.params;
   try {
     const r = await llamar(`${MODULO_B_URL}/citas/${encodeURIComponent(id)}`, 'DELETE');
+    res.setHeader('X-Domain-Node', r.nodeId || 'desconocido');
     if (!r.ok) return reenviarErrorB(res, r); // aquí pasan el 404 y el 409
 
     const { cita_id, eliminado_en } = r.data.data || {};
-    await notificarAuditoria(req, 'ELIMINACION', cita_id, 'ELIMINADA');
+    await notificarAuditoria(req, 'ELIMINACION', cita_id, 'ELIMINADA', r.nodeId);
     return ok(res, 200, 'Cita médica eliminada exitosamente', { cita_id, eliminado_en });
   } catch (err) {
     return errorDeRed(res, err);

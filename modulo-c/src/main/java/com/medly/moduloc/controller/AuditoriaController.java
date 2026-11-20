@@ -7,12 +7,15 @@ import com.medly.moduloc.service.AuditoriaService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.bson.Document;
+import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/auditoria")
@@ -21,12 +24,29 @@ import java.util.List;
 public class AuditoriaController {
 
     private final AuditoriaService auditoriaService;
+    private final MongoTemplate mongoTemplate;
 
     @GetMapping("/health")
-    public ResponseEntity<ApiResponse<String>> health() {
-        return ResponseEntity.ok(
-                ApiResponse.success(200, "Módulo C saludable", "OK")
-        );
+    public ResponseEntity<ApiResponse<Map<String, Object>>> health() {
+        String nodeId = System.getenv().getOrDefault(
+                "NODE_ID", System.getenv().getOrDefault("HOSTNAME", "modulo-c-local"));
+        try {
+            mongoTemplate.executeCommand(new Document("ping", 1));
+            Map<String, Object> data = Map.of(
+                    "status", "UP",
+                    "service", "modulo-c-auditoria",
+                    "nodeId", nodeId,
+                    "database", Map.of("name", "MongoDB", "status", "UP"));
+            return ResponseEntity.ok(ApiResponse.success(200, "Módulo C saludable", data));
+        } catch (Exception ex) {
+            Map<String, Object> data = Map.of(
+                    "status", "DOWN",
+                    "service", "modulo-c-auditoria",
+                    "nodeId", nodeId,
+                    "database", Map.of("name", "MongoDB", "status", "DOWN"));
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                    .body(ApiResponse.success(503, "MongoDB no disponible", data));
+        }
     }
 
     /**
