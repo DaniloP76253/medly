@@ -1,0 +1,60 @@
+@startuml
+title Medly - Topologia extendida simplificada
+left to right direction
+skinparam shadowing false
+skinparam componentStyle rectangle
+skinparam packageStyle rectangle
+skinparam defaultTextAlignment center
+
+actor "Cliente web" as Cliente
+
+package "Capa de entrada" {
+  component "HAProxy\nRound Robin\nHealth checks HTTP" as HAProxy
+}
+
+package "Red interna Docker" {
+  package "Zona de disponibilidad logica A" as ZonaA {
+    component "Gateway A1\nNode.js + Express\nSin estado" as A1
+    component "Modulo B\nFastAPI\nSin estado" as B
+    component "Modulo C\nSpring Boot\nSin estado" as C
+    database "PostgreSQL 16\n4 particiones HASH(cita_id)" as PG
+    database "mongo-1\nPrimario" as M1
+  }
+
+  package "Zona de disponibilidad logica B" as ZonaB {
+    component "Gateway A2\nNode.js + Express\nSin estado" as A2
+    database "mongo-2\nSecundario" as M2
+    database "mongo-3\nSecundario" as M3
+  }
+}
+
+Cliente --> HAProxy : HTTP / API
+HAProxy --> A1 : Round Robin
+HAProxy --> A2 : Round Robin
+HAProxy ..> A1 : GET /health
+HAProxy ..> A2 : GET /health
+A1 --> B : operaciones de citas
+A2 --> B : operaciones de citas
+A1 --> C : eventos de auditoria
+A2 --> C : eventos de auditoria
+B --> PG : SQL
+C --> M1 : escritura / consulta
+M1 ..> M2 : replicacion
+M1 ..> M3 : replicacion
+
+note bottom of HAProxy
+  Si un gateway falla, HAProxy lo retira
+  y envia las solicitudes al nodo saludable.
+end note
+
+note bottom of ZonaA
+  Las zonas son una separacion logica.
+  En la entrega se simulan en un solo host Docker.
+end note
+
+note bottom of ZonaB
+  MongoDB elige un nuevo primario si el actual falla.
+  El sharding se mantiene como diseno futuro.
+end note
+@enduml
+
