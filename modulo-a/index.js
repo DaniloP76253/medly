@@ -215,7 +215,7 @@ app.get('/api/dashboard/health', async (req, res) => {
       nodes,
       databases,
       failoverEvents: [],
-      note: 'El entorno local usa una instancia por servicio; el failover automático está en la arquitectura propuesta.',
+      note: 'HAProxy distribuye las solicitudes entre dos gateways; los módulos B y C usan una instancia cada uno.',
     },
   });
 });

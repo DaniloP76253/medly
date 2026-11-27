@@ -1,14 +1,9 @@
-# Red aislada: todos los módulos se comunican por nombre de servicio
+# Entorno académico de alta disponibilidad ejecutado en un único host Docker.
 networks:
   medly-net:
     driver: bridge
 
-
-# Servicios
-
 services:
-
-  # Base de Datos Relacional - PostgreSQL 16
   db-relacional:
     image: postgres:16-alpine
     container_name: medly-db-relacional
@@ -19,10 +14,7 @@ services:
       POSTGRES_DB: citas_db
     volumes:
       - pgdata:/var/lib/postgresql/data
-    networks:
-      - medly-net
-    ports:
-      - "5433:5432"           # Puerto alternativo del host; dentro de Docker sigue siendo 5432
+    networks: [medly-net]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d citas_db"]
       interval: 5s
@@ -30,8 +22,20 @@ services:
       retries: 10
       start_period: 10s
 
-  # Módulo B - Servicio de Dominio (FastAPI / Python) | Puerto 5000
-  # Solo accesible dentro de medly-net; modulo-a lo llama por hostname.
+  db-init:
+    image: postgres:16-alpine
+    container_name: medly-db-init
+    restart: "no"
+    environment:
+      PGPASSWORD: postgres
+    volumes:
+      - ./modulo-b/database/init:/scripts:ro
+    networks: [medly-net]
+    depends_on:
+      db-relacional:
+        condition: service_healthy
+    command: ["psql", "-v", "ON_ERROR_STOP=1", "-h", "db-relacional", "-U", "postgres", "-d", "citas_db", "-f", "/scripts/01-create-partitioned-citas.sql"]
+
   modulo-b:
     build:
       context: ./modulo-b
@@ -39,18 +43,16 @@ services:
     container_name: medly-modulo-b
     restart: unless-stopped
     environment:
+      NODE_ID: dominio-b1
       DB_HOST: db-relacional
       DB_PORT: 5432
       DB_USER: postgres
       DB_PASSWORD: postgres
       DB_NAME: citas_db
-    ports:
-      - "5000:5000"
-    networks:
-      - medly-net
+    networks: [medly-net]
     depends_on:
-      db-relacional:
-        condition: service_healthy
+      db-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:5000/health || exit 1"]
       interval: 10s
@@ -58,67 +60,81 @@ services:
       retries: 5
       start_period: 15s
 
-  # Módulo A - API Gateway (Node.js / Express) | Puerto 8080
-  # Único punto de entrada público. Pertenece a medly-net para
-  # resolver "modulo-b" y "modulo-c" por nombre de servicio DNS.
-  modulo-a:
-    build:
-      context: ./modulo-a
-      dockerfile: Dockerfile
-    container_name: medly-modulo-a
+  mongo-1:
+    image: mongo:7.0
+    container_name: medly-mongo-1
+    hostname: mongo-1
     restart: unless-stopped
-    environment:
-      PORT: 8080
-      MODULO_B_URL: http://modulo-b:5000
-      MODULO_C_URL: http://modulo-c:6001/api/auditoria
-    ports:
-      - "8081:8080"           # Puerto del host; el servicio sigue usando 8080 dentro de Docker
-    networks:
-      - medly-net
-    depends_on:
-      modulo-b:
-        condition: service_healthy
-      modulo-c:
-        condition: service_healthy
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
+    volumes: [mongo1_data:/data/db]
+    networks: [medly-net]
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://localhost:8080/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
-      interval: 10s
+      test: ["CMD", "mongosh", "--quiet", "--eval", "quit(db.adminCommand('ping').ok ? 0 : 2)"]
+      interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 20
       start_period: 10s
 
-  # Base de Datos NoSQL - MongoDB Atlas Local (Auditoría)
-  atlas-local:
-    image: mongodb/mongodb-atlas-local:latest
-    hostname: atlas-local
-    container_name: medly-atlas-local
+  mongo-2:
+    image: mongo:7.0
+    container_name: medly-mongo-2
+    hostname: mongo-2
     restart: unless-stopped
-    ports:
-      - "27017:27017"
-    volumes:
-      - atlas_local_data:/data/db
-      - atlas_local_config:/data/configdb
-      - ./modulo-c/database/init:/docker-entrypoint-initdb.d:ro
-    networks:
-      - medly-net
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
+    volumes: [mongo2_data:/data/db]
+    networks: [medly-net]
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "quit(db.adminCommand('ping').ok ? 0 : 2)"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
 
-  # Módulo C - Servicio de Trazabilidad y Auditoría (Spring Boot / Java) | Puerto 6000
+  mongo-3:
+    image: mongo:7.0
+    container_name: medly-mongo-3
+    hostname: mongo-3
+    restart: unless-stopped
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
+    volumes: [mongo3_data:/data/db]
+    networks: [medly-net]
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "quit(db.adminCommand('ping').ok ? 0 : 2)"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  mongo-init:
+    image: mongo:7.0
+    container_name: medly-mongo-init
+    restart: "no"
+    volumes:
+      - ./modulo-c/database:/scripts:ro
+    networks: [medly-net]
+    depends_on:
+      mongo-1:
+        condition: service_healthy
+      mongo-2:
+        condition: service_healthy
+      mongo-3:
+        condition: service_healthy
+    entrypoint: ["sh", "/scripts/init-replica-set.sh"]
+
   modulo-c:
     build:
       context: ./modulo-c
       dockerfile: Dockerfile
     container_name: medly-modulo-c
     restart: unless-stopped
-    ports:
-      - "6000:6001"
     environment:
-      MONGODB_URI: mongodb://atlas-local:27017/medly_audit?directConnection=true
+      NODE_ID: auditoria-c1
+      MONGODB_URI: mongodb://mongo-1:27017,mongo-2:27017,mongo-3:27017/medly_audit?replicaSet=rs0&retryWrites=true&w=majority
       MONGODB_DATABASE: medly_audit
-    networks:
-      - medly-net
+    networks: [medly-net]
     depends_on:
-      atlas-local:
-        condition: service_healthy
+      mongo-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:6001/api/auditoria/health || exit 1"]
       interval: 10s
@@ -126,7 +142,74 @@ services:
       retries: 5
       start_period: 25s
 
-  # Frontend SPA del panel de operaciones; Nginx reenvía /api al gateway.
+  gateway-a1:
+    build:
+      context: ./modulo-a
+      dockerfile: Dockerfile
+    container_name: medly-gateway-a1
+    restart: unless-stopped
+    environment:
+      NODE_ID: gateway-a1
+      PORT: 8080
+      MODULO_B_URL: http://modulo-b:5000
+      MODULO_C_URL: http://modulo-c:6001/api/auditoria
+    networks: [medly-net]
+    depends_on:
+      modulo-b:
+        condition: service_healthy
+      modulo-c:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8080/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  gateway-a2:
+    build:
+      context: ./modulo-a
+      dockerfile: Dockerfile
+    container_name: medly-gateway-a2
+    restart: unless-stopped
+    environment:
+      NODE_ID: gateway-a2
+      PORT: 8080
+      MODULO_B_URL: http://modulo-b:5000
+      MODULO_C_URL: http://modulo-c:6001/api/auditoria
+    networks: [medly-net]
+    depends_on:
+      modulo-b:
+        condition: service_healthy
+      modulo-c:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8080/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  haproxy:
+    image: haproxy:3.0-alpine
+    container_name: medly-haproxy
+    restart: unless-stopped
+    ports:
+      - "8081:8080"
+    volumes:
+      - ./haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    networks: [medly-net]
+    depends_on:
+      gateway-a1:
+        condition: service_healthy
+      gateway-a2:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "haproxy", "-c", "-f", "/usr/local/etc/haproxy/haproxy.cfg"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
   frontend:
     build:
       context: ./frontend
@@ -135,23 +218,23 @@ services:
     restart: unless-stopped
     ports:
       - "3000:80"
-    networks:
-      - medly-net
+    networks: [medly-net]
     depends_on:
-      modulo-a:
+      haproxy:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost/health | grep -q ok"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/health | grep -q ok"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 5s
 
-# Volúmenes persistentes
 volumes:
   pgdata:
     driver: local
-  atlas_local_data:
+  mongo1_data:
     driver: local
-  atlas_local_config:
+  mongo2_data:
+    driver: local
+  mongo3_data:
     driver: local

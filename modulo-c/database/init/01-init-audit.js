@@ -1,17 +1,14 @@
 // ==============================================================================
-// Script de inicialización para MongoDB Atlas Local (Medly - Módulo C)
-// Se ejecuta automáticamente al iniciar el contenedor por primera vez.
-// Versionado en GitHub para que cualquier desarrollador tenga la BD lista.
+// Inicialización idempotente de la base de auditoría del Replica Set.
 // ==============================================================================
 
 // Cambiar a la base de datos de auditoría
 db = db.getSiblingDB('medly_audit');
 
-// Limpiar colección si existe (para idempotencia en recreación)
-db.eventos_auditoria.drop();
-
 // 1. Crear colección con validador de esquema básico
-db.createCollection('eventos_auditoria');
+if (!db.getCollectionNames().includes('eventos_auditoria')) {
+  db.createCollection('eventos_auditoria');
+}
 
 // 2. Crear índices para optimizar las consultas de auditoría
 db.eventos_auditoria.createIndex({ "citaId": 1 }, { name: "idx_cita_id" });
@@ -22,7 +19,8 @@ db.eventos_auditoria.createIndex({ "hashOperacion": 1 }, { unique: true, name: "
 
 // 3. Semilla de datos iniciales: Traza histórica de ejemplo
 // Refleja el ciclo de vida de citas médicas sincronizadas con Módulo B
-db.eventos_auditoria.insertMany([
+if (db.eventos_auditoria.countDocuments() === 0) {
+  db.eventos_auditoria.insertMany([
   {
     "citaId": "cita_98a7b6c5",
     "tipoOperacion": "CREACION",
@@ -87,8 +85,9 @@ db.eventos_auditoria.insertMany([
       "motivo_cancelacion": "Cancelado por el paciente"
     }
   }
-]);
+  ]);
+}
 
-print("=== Base de datos medly_audit inicializada con éxito en MongoDB Atlas Local ===");
+print("=== Base de datos medly_audit inicializada con éxito en MongoDB Replica Set ===");
 print("Documentos insertados: " + db.eventos_auditoria.countDocuments());
 

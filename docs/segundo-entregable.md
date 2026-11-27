@@ -88,6 +88,8 @@ Round Robin es apropiado porque las instancias ejecutan el mismo código, tienen
 recursos equivalentes y no conservan sesiones locales. Las operaciones de la API
 presentan un costo similar y cualquier gateway puede atenderlas. Por estas
 razones no es necesario incorporar afinidad de sesión ni ponderaciones distintas.
+Además, HAProxy reintenta en el nodo alternativo cuando una conexión falla, lo
+que evita exponer un error mientras termina la detección del health check.
 
 #### Comprobaciones de salud
 
@@ -200,4 +202,202 @@ que deberían emplear filtros, rangos de fecha y paginación.
 La diferencia entre ambos mecanismos es importante: las cuatro particiones de
 PostgreSQL se implementarán dentro de una misma instancia, mientras que el
 sharding de MongoDB se documenta como una distribución futura entre servidores.
+
+## 3. Blueprint del informe de pruebas de estrés y caos
+
+Esta sección define cómo ejecutar y documentar las pruebas. Los campos marcados
+como **[Completar]** deben reemplazarse con los valores obtenidos; no representan
+resultados anticipados. Todas las pruebas deben ejecutarse sobre el mismo equipo
+y con la misma versión del código para que la comparación sea válida.
+
+### 3.1 Configuración del entorno
+
+| Elemento | Valor utilizado |
+|---|---|
+| Equipo y sistema operativo | **[Completar]** |
+| Procesador y memoria disponible | **[Completar]** |
+| Docker y Docker Compose | **[Completar versiones]** |
+| Herramienta de carga | k6 **[Completar versión]** |
+| URL probada | `http://localhost:8081` |
+| Fecha y hora de ejecución | **[Completar]** |
+| Commit o versión del proyecto | **[Completar]** |
+
+Antes de cada escenario se debe levantar el entorno desde un estado conocido:
+
+```sh
+docker compose up --build -d
+docker compose ps
+```
+
+Si existe un volumen de PostgreSQL es necesario un reinicio limpio
+
+```sh
+docker compose down -v
+docker compose up --build -d
+```
+
+Se propone el siguiente perfil común de carga. Puede reducirse si el equipo no
+dispone de recursos suficientes, pero debe mantenerse idéntico en todos los
+escenarios comparados:
+
+| Etapa | Duración | Usuarios virtuales |
+|---|---:|---:|
+| Subida gradual | 30 segundos | 0 a 20 |
+| Carga sostenida | 2 minutos | 20 |
+| Descenso | 30 segundos | 20 a 0 |
+
+La operación principal será `POST /api/citas`, utilizando identificadores y
+fechas variables para evitar conflictos entre solicitudes. Las métricas mínimas
+serán solicitudes por segundo, latencia promedio, p95, p99 y tasa de errores.
+
+### 3.2 Escenario 0: línea base
+
+**Objetivo:** establecer el comportamiento normal del sistema y comprobar que
+HAProxy distribuye solicitudes entre `gateway-a1` y `gateway-a2`.
+
+**Preparación:** verificar que todos los servicios estén saludables y que ambos
+gateways aparezcan en ejecución.
+
+**Procedimiento:**
+
+1. Ejecutar el perfil de carga completo sin detener contenedores.
+2. Guardar el resumen generado por k6.
+3. Realizar varias consultas a `/health` y registrar los valores de
+   `X-Node-Id` para demostrar la alternancia.
+4. Capturar `docker compose ps` y los logs de HAProxy.
+
+**Resultados:**
+
+| TPS promedio | Latencia promedio | p95 | p99 | Error |
+|---:|---:|---:|---:|---:|
+| **[Completar]** | **[Completar]** | **[Completar]** | **[Completar]** | **[Completar]** |
+
+**Evidencias:**
+
+- Captura del resumen k6: **[Insertar imagen o enlace]**.
+- Captura de los dos identificadores de gateway: **[Insertar imagen]**.
+- Observaciones: **[Completar]**.
+
+### 3.3 Escenario 1: caída de un gateway
+
+**Objetivo:** medir si HAProxy retira automáticamente un gateway caído y cuánto
+tarda el sistema en continuar operando exclusivamente con el nodo restante.
+
+**Falla inyectada:** durante la etapa de carga sostenida, ejecutar:
+
+```sh
+docker stop medly-gateway-a1
+```
+
+Para reincorporar el nodo después de la medición:
+
+```sh
+docker start medly-gateway-a1
+```
+
+**Procedimiento:**
+
+1. Iniciar la carga y anotar la hora exacta de inicio.
+2. Detener `gateway-a1` durante la carga sostenida y anotar la hora.
+3. Mantener la carga durante al menos 30 segundos adicionales.
+4. Registrar cuándo dejan de aparecer errores y cuándo HAProxy marca el nodo
+   como no disponible.
+5. Iniciar nuevamente el gateway y observar su reincorporación.
+
+**Resultados:**
+
+| TPS promedio | p95 | p99 | Error | RTO observado |
+|---:|---:|---:|---:|---:|
+| **[Completar]** | **[Completar]** | **[Completar]** | **[Completar]** | **[Completar]** |
+
+**Análisis que debe completar el ejecutor:**
+
+- Cantidad de solicitudes fallidas durante la detección: **[Completar]**.
+- Comportamiento de las solicitudes posteriores: **[Completar]**.
+- Tiempo de retiro y reincorporación del nodo: **[Completar]**.
+- Comparación con la línea base: **[Completar]**.
+- Evidencia de k6 y logs HAProxy: **[Insertar imágenes]**.
+
+### 3.4 Escenario 2: caída del primario MongoDB
+
+**Objetivo:** verificar la elección automática de un nuevo primario y observar
+el impacto sobre el registro de auditoría.
+
+**Preparación:** identificar el primario actual:
+
+```sh
+docker compose exec mongo-1 mongosh --quiet --eval "rs.status().members.map(m => ({name:m.name,state:m.stateStr}))"
+```
+
+**Falla inyectada:** detener el contenedor identificado como `PRIMARY`. Por
+ejemplo, si el primario es `mongo-1`:
+
+```sh
+docker stop medly-mongo-1
+```
+
+**Procedimiento:**
+
+1. Iniciar la carga y confirmar que se generan eventos de auditoría.
+2. Detener el primario y anotar la hora exacta.
+3. Consultar el estado desde uno de los nodos activos hasta observar un nuevo
+   `PRIMARY`.
+4. Mantener la carga durante 30 segundos y comprobar que vuelven a registrarse
+   eventos.
+5. Reiniciar el nodo detenido al finalizar.
+
+**Resultados:**
+
+| Tiempo de elección | Solicitudes API fallidas | Auditorías esperadas | Auditorías registradas | Pérdida observada |
+|---:|---:|---:|---:|---:|
+| **[Completar]** | **[Completar]** | **[Completar]** | **[Completar]** | **[Completar]** |
+
+**Análisis que debe completar el ejecutor:**
+
+- Nuevo nodo primario: **[Completar]**.
+- Efecto de `retryWrites` y `writeConcern=majority`: **[Completar]**.
+- Errores transitorios observados: **[Completar]**.
+- Evidencias del Replica Set antes y después: **[Insertar imágenes]**.
+
+### 3.5 Escenario 3: verificación del particionamiento
+
+**Objetivo:** comprobar que las citas se almacenan en las cuatro particiones de
+PostgreSQL. Esta es una verificación funcional, no una prueba de failover.
+
+Después de generar suficientes citas, ejecutar:
+
+```sh
+docker compose exec db-relacional psql -U postgres -d citas_db -c \
+  "SELECT tableoid::regclass AS particion, COUNT(*) AS filas FROM citas GROUP BY tableoid ORDER BY particion;"
+```
+
+**Resultados:**
+
+| Partición | Cantidad de filas |
+|---|---:|
+| `citas_p0` | **[Completar]** |
+| `citas_p1` | **[Completar]** |
+| `citas_p2` | **[Completar]** |
+| `citas_p3` | **[Completar]** |
+
+**Evidencia y análisis:** **[Insertar captura y explicar si la distribución fue
+razonablemente uniforme]**.
+
+### 3.6 Resumen comparativo
+
+Esta tabla debe completarse al terminar todos los escenarios:
+
+| Escenario | Falla inyectada | TPS | p95 | p99 | Error | RTO |
+|---|---|---:|---:|---:|---:|---:|
+| Línea base | Ninguna | **[ ]** | **[ ]** | **[ ]** | **[ ]** | N/A |
+| Caída de gateway | `gateway-a1` detenido | **[ ]** | **[ ]** | **[ ]** | **[ ]** | **[ ]** |
+| Caída de MongoDB | Primario detenido | **[ ]** | **[ ]** | **[ ]** | **[ ]** | **[ ]** |
+
+### 3.7 Hallazgos y plan de mejora
+
+- Principal cuello de botella observado: **[Completar]**.
+- Componente que alcanzó mayor uso de recursos: **[Completar]**.
+- Diferencia más relevante respecto de la línea base: **[Completar]**.
+- Acción correctiva propuesta: **[Completar]**.
+- Limitaciones de la prueba: **[Completar]**.
 

@@ -6,11 +6,11 @@ instrucciones generales del proyecto.
 
 ## Estado de la entrega
 
-El repositorio contiene una SPA que consulta los servicios actuales y
-una propuesta documentada de alta disponibilidad, particionamiento y failover.
-El `docker-compose.yml` local aún levanta **una instancia de cada servicio y una
-instancia de cada base de datos**. La topología HA de los diagramas es el diseño
-objetivo; no está desplegada en este Compose.
+El repositorio contiene una implementación académica de alta disponibilidad:
+HAProxy distribuye las peticiones entre dos gateways, MongoDB utiliza un Replica
+Set de tres nodos y PostgreSQL almacena las citas en cuatro particiones hash.
+Todo se ejecuta en un único host, por lo que las zonas de disponibilidad del
+informe son lógicas y no protegen frente a la caída completa del computador.
 
 ## Inicio rápido
 
@@ -22,6 +22,12 @@ Desde la raíz del proyecto:
 docker compose up --build -d
 docker compose ps
 ```
+
+Si ya se ejecutó una versión anterior, el servicio `db-init` migra la tabla
+existente sin borrar sus filas: conserva la tabla original como
+`citas_legacy`, crea `citas` particionada y copia los registros. El comando
+`docker compose down -v` solo debe usarse cuando se quiera borrar de forma
+intencional toda la información local.
 
 Abre el panel en <http://localhost:3000>. El gateway también está publicado en
 <http://localhost:8081> para consultas directas.
@@ -41,8 +47,8 @@ docker compose down -v
 ## Qué ofrece el frontend
 
 El frontend está en [`frontend/`](frontend/) y usa HTML, CSS, JavaScript y
-Nginx. Nginx sirve la SPA en el puerto `3000` y reenvía las llamadas `/api` al
-gateway dentro de la red Docker, así el navegador usa un único origen.
+Nginx. Nginx sirve la SPA en el puerto `3000` y reenvía las llamadas `/api` a
+HAProxy dentro de la red Docker, así el navegador usa un único origen.
 
 - **Registro de citas:** formulario para crear una cita individual.
 - **Ráfagas:** permite enviar entre 2 y 20 citas concurrentes. El sistema indica
@@ -56,11 +62,12 @@ gateway dentro de la red Docker, así el navegador usa un único origen.
 - **Salud:** consulta el gateway, los módulos B y C, PostgreSQL y MongoDB; se
   actualiza cada 12 segundos, se puede actualizar manualmente y tiene una
   comprobación individual para cada servicio.
-- **Failover:** muestra los eventos reportados por el backend. El stack local no
-  tiene coordinador de failover, por lo que actualmente informa cero eventos.
+- **Failover:** HAProxy retira un gateway que falle sus comprobaciones HTTP y
+  continúa enviando tráfico al gateway saludable.
 
-La interfaz distingue el estado real del Compose local de la arquitectura HA
-propuesta.
+El Replica Set de MongoDB realiza la elección de un nuevo primario si el nodo
+actual deja de estar disponible y conserva las escrituras con confirmación de
+mayoría.
 
 ## Cambios en el backend para el panel
 
@@ -126,42 +133,20 @@ curl http://localhost:8081/api/citas
 curl http://localhost:8081/api/auditoria/eventos
 ```
 
-## Arquitectura objetivo
+## Arquitectura implementada y evolución futura
 
-La explicación completa y las decisiones están en
-[`docs/arquitectura-ha.md`](docs/arquitectura-ha.md). En resumen, el diseño
-propone:
-
-- Dos proxies de borde con HAProxy y Keepalived detrás de una IP virtual, más
-  dos instancias del frontend y dos del gateway.
-- Tres instancias stateless de los módulos B y C.
-- PostgreSQL con Patroni, tres nodos, etcd con quorum de tres miembros y un par
-  HAProxy/Keepalived para mantener endpoints de lectura y escritura.
-- MongoDB sharded: dos `mongos`, Replica Set de tres nodos para configuración y
-  dos shards, cada uno como Replica Set de tres nodos.
-- Redes separadas para frontend, servicios y datos.
-- Particionamiento PostgreSQL con `HASH(cita_id)` en ocho particiones y
-  particionamiento MongoDB con shard key `{ citaId: "hashed" }`.
-
-El modo síncrono PostgreSQL busca RPO 0 para las escrituras confirmadas ante la
-caída de un nodo, con la consecuencia de que las escrituras pueden detenerse si
-no queda una réplica síncrona disponible. Como objetivos iniciales a validar se
-propusieron RTO menor a 10 segundos para recuperación de una réplica de
-aplicación y menor a 30 segundos para la elección del primario PostgreSQL. Son
-metas de diseño, no métricas medidas.
+La explicación vigente se encuentra en
+[`docs/segundo-entregable.md`](docs/segundo-entregable.md). El Compose implementa
+un HAProxy, dos gateways sin estado, un módulo de dominio, un módulo de auditoría,
+PostgreSQL con cuatro particiones y un Replica Set MongoDB de tres miembros. El
+sharding de auditorías mediante `{ citaId: "hashed" }` se mantiene como diseño
+futuro y no se presenta como una característica desplegada.
 
 ## Diagramas PlantUML
 
-Los fuentes están en [`docs/diagramas/`](docs/diagramas/):
-
-1. [`arquitectura-ha.puml`](docs/diagramas/arquitectura-ha.puml): servicios,
-   redes, balanceadores y clústeres propuestos.
-2. [`particionamiento-datos.puml`](docs/diagramas/particionamiento-datos.puml):
-   particiones PostgreSQL y shards MongoDB.
-3. [`flujo-dashboard.puml`](docs/diagramas/flujo-dashboard.puml): consultas del
-   panel, escritura de citas y persistencia de auditoría.
-4. [`failover-datos.puml`](docs/diagramas/failover-datos.puml): retiro de una
-   réplica de aplicación y conmutación de las bases de datos.
+El diagrama requerido para el informe es
+[`arquitectura-simple.puml`](docs/diagramas/arquitectura-simple.puml). Incluye
+clientes, balanceador, aplicaciones sin estado, bases de datos y zonas lógicas.
 
 Con PlantUML instalado, se pueden exportar a SVG así:
 
@@ -169,11 +154,8 @@ Con PlantUML instalado, se pueden exportar a SVG así:
 plantuml -tsvg docs/diagramas/*.puml
 ```
 
-## Alcance pendiente del proyecto final
+## Alcance pendiente
 
-La entrega actual no configura réplicas, balanceadores, Patroni, MongoDB
-sharding ni failover automático. Tampoco incluye resultados de ingeniería del
-caos o pruebas de carga. Para el proyecto final queda implementar esa topología
-y documentar los escenarios con medidas reales de RTO/RPO, latencia p95/p99,
-TPS, errores HTTP y recuperación. El script [`test-containers.sh`](test-containers.sh)
-continúa cubriendo el flujo base de integración y persistencia.
+Queda ejecutar los blueprints incluidos en el informe y completar TPS, latencia
+p95/p99, errores y RTO con resultados reales. El sharding físico de MongoDB no
+forma parte de esta entrega.
